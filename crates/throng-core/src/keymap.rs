@@ -161,12 +161,15 @@ const TERMINAL: &[Scope] = &[Scope::Terminal];
 const EXPLORER: &[Scope] = &[Scope::Explorer];
 const PANELS: &[Scope] = &[Scope::Editor, Scope::Terminal];
 const LINKS: &[Scope] = &[Scope::Editor, Scope::Preview];
+const PREVIEW: &[Scope] = &[Scope::Preview];
 
 /// Every command a chord can run, in the order the key bindings editor lists them.
 pub const COMMANDS: &[Command] = &[
     cmd("navigate.quickOpen", "Navigate", "Quick Open", EVERYWHERE, &["Ctrl+Shift+T"]),
     cmd("navigate.gotoLine", "Navigate", "Go To Line", EDITOR, &["Ctrl+G"]),
     cmd("preview.followLink", "Navigate", "Open Link", LINKS, &["Ctrl+Enter"]),
+    cmd("navigate.back", "Navigate", "Back", PREVIEW, &["Alt+ArrowLeft"]),
+    cmd("navigate.forward", "Navigate", "Forward", PREVIEW, &["Alt+ArrowRight"]),
     cmd("tabs.next", "Tabs", "Next tab", EVERYWHERE, &["Ctrl+Tab"]),
     cmd("tabs.previous", "Tabs", "Previous tab", EVERYWHERE, &["Ctrl+Shift+Tab"]),
     cmd("panel.splitRight", "Panels", "Split right with a terminal", EVERYWHERE, &["Ctrl+Shift+D"]),

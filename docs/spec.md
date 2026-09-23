@@ -381,7 +381,19 @@ missing. [Open work](#open-work) collects every gap in one list.
     - `http:`, `data:`, `file:` and every other scheme never load.
     - An image inside a link is the link, and its tooltip names the link's target.
 
-  *Not yet:* scroll sync with the editor, and back/forward history.
+  - **History.** Each preview keeps where it has been, saved with the layout: every file it
+    showed, and how far down each was read.
+    - Following a link into the same preview, or to a heading in the same file, adds a place.
+      Any places ahead of the current one are dropped first.
+    - **Back** and **Forward** return to a place and its scroll position. They appear as buttons
+      at the top left of the preview, as items in its tab menu, and as Alt+Left and Alt+Right in a
+      focused preview (a preview is focused from a press inside it until a press elsewhere). The
+      mouse's back and forward buttons also work over it.
+    - `editor.navigationHistorySize` (10) caps the places kept, oldest first and never the
+      current one. A lower cap applies at the next step.
+    - Places follow a file that is moved or renamed.
+
+  *Not yet:* scroll sync with the editor.
 
 ### Appearance and configuration
 
@@ -412,7 +424,7 @@ missing. [Open work](#open-work) collects every gap in one list.
   - **Project colour.** The project colour remains the project's mark. The caret, the selection and
     every surface belong to the theme.
 - **FR-042** Key bindings.
-  - **The keymap.** One keymap holds every chord. It has 36 commands, each with the scopes it is live
+  - **The keymap.** One keymap holds every chord. It has 38 commands, each with the scopes it is live
     in (editors, terminals, the file tree, previews, Find in Files) and its defaults. The macOS
     defaults differ only where they must: Cmd+H hides an app, so Replace is Cmd+Alt+F there.
   - **The file.** `<config>/keybindings.json` is
@@ -471,7 +483,7 @@ In rough order of value:
 3. **Sub-workspaces** (FR-021): the single focus group, dragging a tab out to tear it off, and moving
    a panel rather than showing it.
 4. **Icon packs:** image (SVG) icons (FR-043).
-5. **Markdown previews:** scroll sync, and back/forward history (FR-038).
+5. **Markdown previews:** scroll sync with the editor (FR-038).
 
 ## Done means
 

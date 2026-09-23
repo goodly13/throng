@@ -882,11 +882,31 @@ fn a_preview_opens_beside_its_editor_follows_unsaved_edits_and_follows_links_in_
     // Ctrl+click on a link to another Markdown file shows it in the same preview.
     harness.get_by_label("the other").click_modifiers(Modifiers::COMMAND);
     steps(&mut harness, 4);
-    let kind = harness.state().active_layout().unwrap().panels[&preview].kind.clone();
-    assert_eq!(kind, PanelKind::Preview(PreviewPanelConfig { path: root.join("other.md") }));
+    let shown = |app: &ThrongApp| match &app.active_layout().unwrap().panels[&preview].kind {
+        PanelKind::Preview(config) => (config.path.clone(), config.can_back(), config.can_forward()),
+        other => panic!("not a preview: {other:?}"),
+    };
+    assert_eq!(shown(harness.state()), (root.join("other.md"), true, false));
     steps(&mut harness, 3);
     harness.get_by_label("Part Two");
     harness.get_by_label("other.md - Preview");
+
+    // Back returns to the plan, Forward to the other file; Alt+Left goes back from the keyboard.
+    harness.get_by_label("Back").click();
+    steps(&mut harness, 4);
+    assert_eq!(shown(harness.state()), (plan.clone(), false, true));
+    harness.get_by_label("the other");
+    harness.get_by_label("Forward").click();
+    steps(&mut harness, 4);
+    assert_eq!(shown(harness.state()), (root.join("other.md"), true, false));
+    harness.get_by_label("Part Two").click();
+    steps(&mut harness, 2);
+    harness.key_press_modifiers(Modifiers::ALT, Key::ArrowLeft);
+    steps(&mut harness, 4);
+    assert_eq!(shown(harness.state()).0, plan, "Alt+Left in the focused preview");
+    harness.key_press_modifiers(Modifiers::ALT, Key::ArrowRight);
+    steps(&mut harness, 4);
+    assert_eq!(shown(harness.state()).0, root.join("other.md"), "and it keeps the keyboard");
 }
 
 #[test]
@@ -1351,7 +1371,7 @@ fn a_preview_draws_the_projects_images_and_shows_alt_text_for_what_it_may_not_lo
     .unwrap();
     env.seed(&root, |_, layout| {
         let first = layout.tabs[0].root.panels()[0];
-        layout.set_kind(first, PanelKind::Preview(PreviewPanelConfig { path: readme.clone() }));
+        layout.set_kind(first, PanelKind::Preview(PreviewPanelConfig::new(readme.clone())));
     });
     let mut harness = env.app(None);
     let uri = format!("file://{}", std::fs::canonicalize(root.join("img/chart.png")).unwrap().display());

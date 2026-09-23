@@ -79,6 +79,14 @@ fn paint(ui: &Ui, icon: Icon, rect: Rect, colour: Color32) {
     }
 }
 
+/// A small button showing the icon for `token`, named `name` for assistive technology and
+/// enabled or not.
+pub fn token_button(ui: &mut Ui, token: &str, name: &str, enabled: bool) -> Response {
+    let response = ui.add_enabled(enabled, egui::Button::new(glyph(ui.ctx(), token)).small());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
+    response
+}
+
 /// A small frameless button showing `icon`, named for assistive technology.
 pub fn button(ui: &mut Ui, icon: Icon, name: &str) -> Response {
     let size = ui.spacing().interact_size.y;

@@ -195,6 +195,12 @@ pub const SETTINGS: &[SettingDef] = &[
         kind: SettingKind::Bool { default: true },
     },
     SettingDef {
+        key: "editor.navigationHistorySize",
+        label: "Preview history size",
+        help: "How many places Back and Forward remember in each preview.",
+        kind: SettingKind::Int { min: 1, max: 100, default: 10 },
+    },
+    SettingDef {
         key: "editor.showStatusBar",
         label: "Show editor status bar",
         help: "A strip under each editor with the caret, counts, language, wrap and preview.",
@@ -586,6 +592,11 @@ impl Settings {
     #[must_use]
     pub fn remember_directory(&self) -> bool {
         self.bool("terminal.defaultRememberDirectory")
+    }
+    /// How many places a preview's history keeps.
+    #[must_use]
+    pub fn navigation_history_size(&self) -> usize {
+        usize::try_from(self.int("editor.navigationHistorySize")).unwrap_or(10)
     }
     /// Whether previews load `https:` images.
     #[must_use]
