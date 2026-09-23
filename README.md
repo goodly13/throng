@@ -47,7 +47,9 @@ never open a release build's data.
   split or stack it. Right-click a panel tab to split, rename, restart or kill it.
 - **Terminals**: when you close throng with a command running, it asks first. Busy terminals keep
   running and reattach with their output when you reopen. Idle shells close with the app and start
-  fresh next time, in the folder they were last working in.
+  fresh next time, in the folder they were last working in. On Windows, start throng as
+  administrator to tick *Run as administrator* for a terminal. The others then run with a normal
+  user's rights, and the ones that keep administrator rights are marked ADMIN.
 - **Editors**: each file keeps its encoding, BOM and line endings, and Ctrl+S saves. A file that is
   not valid text is refused rather than silently re-encoded. Quitting never asks about unsaved
   edits: they are kept on disk as you type and come back with their undo history on the next

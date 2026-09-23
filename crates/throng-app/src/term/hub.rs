@@ -90,12 +90,20 @@ pub struct TerminalHub {
     dormant: HashSet<PanelId>,
     /// Events raised outside a daemon event, for the app's next look.
     queued: Vec<HubEvent>,
+    /// throng runs as administrator (Windows), so a terminal may keep those rights.
+    pub elevated: bool,
 }
 
 impl TerminalHub {
     #[must_use]
     pub fn new(shells: Vec<ShellInfo>, default_shell: Option<String>, scrollback: usize) -> Self {
-        Self { shells, default_shell, scrollback, ..Self::default() }
+        Self {
+            shells,
+            default_shell,
+            scrollback,
+            elevated: throng_platform::process::can_deelevate(),
+            ..Self::default()
+        }
     }
 
     /// Make sure `panel` has a view, remembering how to start its shell.
@@ -247,6 +255,7 @@ impl TerminalHub {
             cols,
             rows,
             startup_command: plan.config.startup_command.clone(),
+            admin: plan.config.run_as_admin,
         };
         let id = client.send(Request::Spawn(spec));
         view.pending = Some(id);

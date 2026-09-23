@@ -50,6 +50,8 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --no-fail-fast
+        # A hang shows as a failure well before the job's own limit.
+        timeout-minutes: 20
 
       # The real binary, on a virtual display: seed a project with a terminal and an editor, open
       # it, and screenshot. Proves the app starts, spawns its daemon, and draws.

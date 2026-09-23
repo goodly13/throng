@@ -85,6 +85,8 @@ pub struct Client {
     waiters: Waiters,
     next_id: AtomicU64,
     connected: Arc<std::sync::atomic::AtomicBool>,
+    /// Dropped: the reader stops at its next look.
+    closing: Arc<std::sync::atomic::AtomicBool>,
     pub daemon_pid: u32,
     pub daemon_build: String,
 }
@@ -117,6 +119,7 @@ impl Client {
         let (events_tx, events) = crossbeam_channel::unbounded::<ClientEvent>();
         let waiters: Waiters = Arc::default();
         let connected = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let closing = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let notify = Arc::new(notify);
 
         {
@@ -137,12 +140,16 @@ impl Client {
         {
             let waiters = Arc::clone(&waiters);
             let connected = Arc::clone(&connected);
+            let closing = Arc::clone(&closing);
             let stream = Arc::clone(&stream);
             thread::Builder::new()
                 .name("throng-client-read".into())
                 .spawn(move || {
                     let mut recv: &Stream = &stream;
                     let reason = loop {
+                        if closing.load(Ordering::Acquire) {
+                            break "client dropped".to_owned();
+                        }
                         let event = match read_frame::<ServerMsg>(&mut recv) {
                             Ok(ServerMsg::Output { terminal, offset, data }) => {
                                 ClientEvent::Output { terminal, offset, data }
@@ -186,6 +193,7 @@ impl Client {
             waiters,
             next_id: AtomicU64::new(1),
             connected,
+            closing,
             daemon_pid: pid,
             daemon_build: build,
         })
@@ -280,7 +288,19 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
+        self.closing.store(true, Ordering::Release);
         crate::endpoint::shutdown(&self.stream);
+        // On Windows waking a read does not stop the next one, and a read begun just before the
+        // flag was seen would wait for the daemon. Wake it again until the reader has gone, so the
+        // connection closes and the daemon learns at once (bounded).
+        #[cfg(windows)]
+        {
+            let deadline = Instant::now() + Duration::from_millis(500);
+            while self.connected.load(Ordering::Acquire) && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(2));
+                crate::endpoint::shutdown(&self.stream);
+            }
+        }
     }
 }
 

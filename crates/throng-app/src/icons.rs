@@ -41,7 +41,7 @@ pub fn atom_with(
     if let Some(path) = set.as_ref().and_then(|s| s.image(token)) {
         let size = ctx.global_style().text_styles.get(&egui::TextStyle::Button).map_or(14.0, |f| f.size);
         let name = throng_core::icons::ICONS.iter().find(|i| i.token == token).map_or(token, |i| i.label);
-        let image = egui::Image::new(format!("file://{}", path.display()))
+        let image = egui::Image::new(crate::preview::file_uri(path))
             .fit_to_exact_size(vec2(size, size))
             .alt_text(name);
         // One that will not decode draws the glyph instead.

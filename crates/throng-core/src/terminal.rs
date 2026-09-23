@@ -37,6 +37,10 @@ pub struct TerminalPanelConfig {
     /// crash, a restart) still captures it at the next cold start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub running_command: Option<String>,
+    /// Keep throng's administrator rights (Windows, when throng runs as administrator). Otherwise
+    /// an elevated throng starts the shell with a normal user's rights.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub run_as_admin: bool,
 }
 
 impl TerminalPanelConfig {

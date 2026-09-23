@@ -132,6 +132,7 @@ fn spec(cwd: &Path, program: &str, args: &[&str]) -> SpawnSpec {
         cols: 80,
         rows: 24,
         startup_command: None,
+        admin: false,
     }
 }
 
@@ -219,7 +220,11 @@ fn spawn_streams_output_and_reports_the_exit_code() {
         "echo hello from $0; echo secret=${THRONG_SECRET:-none}; exit 3",
         "echo hello from cmd& if defined THRONG_SECRET (echo secret=%THRONG_SECRET%) else (echo secret=none)& exit 3",
     );
-    let mut view = View::new(&snapshot(client.request(Request::Spawn(spec), WAIT)));
+    let first = snapshot(client.request(Request::Spawn(spec), WAIT));
+    // A daemon with no PTY host to hand (as here) gives every terminal its own rights, and only an
+    // elevated Windows daemon's are marked.
+    assert_eq!(first.elevated, cfg!(windows) && throng_platform::process::is_elevated());
+    let mut view = View::new(&first);
     view.pump(&client, |v| v.exited.is_some());
     assert!(view.contains(if cfg!(windows) { "hello from cmd" } else { "hello from /bin/sh" }));
     assert!(view.contains("secret=none"), "THRONG_* variables must not reach the shell");

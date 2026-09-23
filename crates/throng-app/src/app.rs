@@ -594,7 +594,7 @@ impl ThrongApp {
 
     /// `throng <folder>`: activate the project owning `folder`, or create one for it.
     fn open_folder(&mut self, folder: &Path) {
-        let folder = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
+        let folder = throng_platform::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
         if let Some(existing) = self.book.owner_of(&self.rules, &folder).map(|p| p.id) {
             self.switch_project(existing);
             return;
@@ -3361,6 +3361,11 @@ impl ThrongApp {
                 ui.weak(project.root.display().to_string());
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if self.hub.elevated {
+                    ui.label(crate::workspace_ui::admin_mark())
+                        .on_hover_text("throng is running as administrator");
+                    ui.separator();
+                }
                 let (text, color) = match &self.link.state {
                     LinkState::Connected => ("terminal host", Color32::from_rgb(0x57, 0xab, 0x5a)),
                     LinkState::Connecting => ("starting terminal host", ui.visuals().weak_text_color()),

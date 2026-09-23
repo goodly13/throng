@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -19,7 +20,7 @@ use throng_protocol::{
 
 use crate::endpoint::Endpoint;
 use crate::registry::{ClientId, ClientQueue, Registry};
-use crate::session::{DEFAULT_TAIL_BYTES, Session};
+use crate::session::{DEFAULT_TAIL_BYTES, Launch, Session};
 
 /// How often the accept loop looks for new clients and for a stop request.
 const ACCEPT_POLL: Duration = Duration::from_millis(25);
@@ -35,6 +36,9 @@ pub struct DaemonConfig {
     pub tail_bytes: usize,
     /// Identifies the build, for the handshake.
     pub build: String,
+    /// The program that runs a PTY host (`<program> pty-host`): how an elevated daemon starts a
+    /// terminal without administrator rights. `None`: every terminal gets the daemon's rights.
+    pub pty_host: Option<PathBuf>,
 }
 
 impl DaemonConfig {
@@ -46,6 +50,7 @@ impl DaemonConfig {
             unread_exit: Duration::from_secs(3600),
             tail_bytes: DEFAULT_TAIL_BYTES,
             build: crate::BUILD.to_owned(),
+            pty_host: None,
         }
     }
 }
@@ -65,6 +70,8 @@ struct Daemon {
     registry: Arc<Registry>,
     sessions: Mutex<HashMap<TerminalId, Arc<Session>>>,
     stopping: AtomicBool,
+    /// This daemon is elevated and can start a terminal without its rights.
+    deelevates: bool,
 }
 
 /// Run the daemon until it is told to stop or goes idle. Blocks.
@@ -84,7 +91,9 @@ pub fn run(config: DaemonConfig) -> Result<(), RunError> {
     let listener = endpoint.listen()?;
     tracing::info!(pid = std::process::id(), ?endpoint, "daemon listening");
 
+    let deelevates = config.pty_host.is_some() && throng_platform::process::can_deelevate();
     let daemon = Arc::new(Daemon {
+        deelevates,
         config,
         endpoint: endpoint.clone(),
         registry: Arc::new(Registry::default()),
@@ -209,8 +218,8 @@ impl Daemon {
             thread::Builder::new().name("daemon-client-write".into()).spawn(move || {
                 let mut send: &Stream = &stream;
                 write_loop(&mut send, &queue, &rx);
-                // A write failure means the client is gone; wake our reader too.
-                crate::endpoint::shutdown(&stream);
+                // Everything is sent, or the client is gone: end the connection, waking our reader.
+                crate::endpoint::disconnect(&stream);
             })
         };
 
@@ -263,17 +272,31 @@ impl Daemon {
                 if session(spec.terminal).is_some_and(|existing| !existing.is_exited()) {
                     return Some(Err("A terminal with this id is already running.".into()));
                 }
+                let launch = match &self.config.pty_host {
+                    Some(exe) if self.deelevates && !spec.admin => Launch::Deelevated { exe },
+                    _ => Launch::Native,
+                };
                 let daemon = Arc::downgrade(self);
-                let spawned =
-                    Session::spawn(&spec, self.config.tail_bytes, Arc::clone(&self.registry), move |id| {
+                let spawned = Session::spawn(
+                    &spec,
+                    launch,
+                    self.config.tail_bytes,
+                    Arc::clone(&self.registry),
+                    move |id| {
                         if let Some(daemon) = daemon.upgrade() {
                             daemon.session_ended(id);
                         }
-                    });
+                    },
+                );
                 match spawned {
                     Ok(session) => {
                         self.sessions.lock().insert(spec.terminal, Arc::clone(&session));
-                        tracing::info!(terminal = %spec.terminal, pid = ?session.pid, "spawned");
+                        tracing::info!(
+                            terminal = %spec.terminal,
+                            pid = ?session.pid,
+                            elevated = session.elevated,
+                            "spawned"
+                        );
                         session.attach(client, id, spec.cols, spec.rows, &self.registry);
                         None
                     }

@@ -182,6 +182,26 @@ missing. [Open work](#open-work) collects every gap in one list.
     A dormant panel keeps its name, type and place, and stays dormant when its project is switched
     away and back.
   - **Changing the mode.** A change applies to layouts loaded after it.
+- **FR-050** Administrator terminals (Windows). Starting throng as administrator is how a terminal
+  gets administrator rights; there is no separate broker.
+  - **One daemon per level.** An elevated throng has a daemon of its own, beside the one its user's
+    normal throng uses, with its own pipe and lock. A normal program never drives administrator
+    terminals, and an elevated throng never finds a daemon that cannot start them.
+  - **The choice.** The type picker's *Run as administrator* is a per-panel choice, kept with the
+    layout. It is enabled only while throng runs as administrator; otherwise it is shown off and
+    disabled, and its hover says to start throng as administrator.
+  - **Mixed mode.** In an elevated daemon a ticked terminal keeps the daemon's rights. An unticked
+    one runs with a normal user's rights at medium integrity. The daemon starts a PTY host for it
+    (`throng pty-host`) with a normal user's token (Safer's normal-user level, integrity set to
+    medium), and the host creates the pseudo console and the shell. A program cannot use a console
+    host running above its own integrity level, so the de-elevated side must own the PTY. The host
+    relays the terminal over its standard input and output; the daemon holds the host and all it
+    starts in the terminal's job, so none of it outlives the terminal. If the host cannot be
+    started, the terminal fails with the reason. It never falls back to administrator rights.
+  - **Marks.** A running terminal with administrator rights shows a red **ADMIN** mark on its tab.
+    An elevated throng shows the same mark at the right of the main status bar. Both marks come
+    from the daemon's report, not from the settings. Unix terminals are never marked: they have
+    their user's rights, as any program does, root's included.
 
 ### Workspace and layout
 
@@ -509,7 +529,6 @@ In rough order of value:
 
 1. **Windows as a first-class target.**
    - Run the daemon and UI tests on Windows (they drive a Unix PTY today).
-   - Elevated and de-elevated terminals.
 
 ## Done means
 

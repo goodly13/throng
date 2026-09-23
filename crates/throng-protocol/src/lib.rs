@@ -23,7 +23,7 @@ use throng_core::terminal::ExitStatus;
 /// Bumped whenever a message shape changes. [`ClientMsg::Hello`] and [`ServerMsg::Welcome`] are the
 /// first variants of their enums and must keep their shape forever, so any two versions can at least
 /// tell each other apart.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The largest frame either side accepts.
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
@@ -116,6 +116,9 @@ pub struct SpawnSpec {
     pub rows: u16,
     /// Written once after the shell's first output; never on reattach.
     pub startup_command: Option<String>,
+    /// Keep the daemon's administrator rights. Otherwise an elevated daemon starts the shell with a
+    /// normal user's rights (Windows); a daemon without them has none to keep.
+    pub admin: bool,
 }
 
 /// Daemon → client.
@@ -174,6 +177,8 @@ pub struct Snapshot {
     pub exited: Option<ExitStatus>,
     /// The program was on the alternate screen; the daemon nudges it to repaint.
     pub alt_screen: bool,
+    /// The shell runs as administrator (Windows).
+    pub elevated: bool,
 }
 
 /// A session, as listed.
@@ -187,6 +192,8 @@ pub struct TerminalInfo {
     pub busy: bool,
     pub exited: Option<ExitStatus>,
     pub views: usize,
+    /// The shell runs as administrator (Windows).
+    pub elevated: bool,
 }
 
 /// A framing or decoding failure.

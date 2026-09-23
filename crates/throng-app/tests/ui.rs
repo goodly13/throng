@@ -39,7 +39,8 @@ impl Env {
     fn folder(&self, name: &str) -> PathBuf {
         let path = self.dir.path().join(name);
         std::fs::create_dir_all(&path).unwrap();
-        std::fs::canonicalize(path).unwrap()
+        // As throng resolves a folder it is given, without Windows' `\\?\` prefix.
+        throng_platform::fs::canonicalize(&path).unwrap()
     }
 
     fn app(&self, open: Option<PathBuf>) -> Harness<'static, ThrongApp> {
@@ -733,8 +734,10 @@ fn a_file_dragged_from_the_tree_types_its_path_into_a_terminal_without_running_i
     let from = harness.get_by_label("🗋 my file.txt").rect().center();
     let term = harness.get_by_label_contains("Terminal: Seeded").rect().center();
     drag(&mut harness, from, term, Modifiers::NONE);
-    let expected = format!("'{}' ", root.join("my file.txt").display());
-    wait(&mut harness, "the path to be echoed", |app| text_of(app, panel).contains(expected.trim_end()));
+    // Quoted as the platform's shells read it back.
+    let path = root.join("my file.txt").display().to_string();
+    let expected = if cfg!(windows) { format!("\"{path}\"") } else { format!("'{path}'") };
+    wait(&mut harness, "the path to be echoed", |app| text_of(app, panel).contains(&expected));
     std::thread::sleep(Duration::from_millis(300));
     steps(&mut harness, 3);
     assert!(!text_of(harness.state(), panel).contains("No such file"), "nothing was run");
@@ -1541,4 +1544,70 @@ fn a_tab_dragged_out_of_the_dock_tears_off_into_a_sub_workspace_window() {
     assert!(layout.is_away(editor), "torn off: {:?}", layout.away);
     assert_eq!(harness.state().sub_workspaces().len(), 1);
     harness.get_by_label("Seeded · notes.md");
+}
+
+/// An elevated throng (Windows) starts a terminal with a normal user's rights unless its panel asks
+/// to keep throng's, and marks the ones that keep them. Needs an elevated run, which a hosted CI
+/// runner is.
+#[cfg(windows)]
+#[test]
+fn an_elevated_throng_keeps_administrator_rights_only_for_a_terminal_that_asks() {
+    const MEDIUM: &str = "S-1-16-8192";
+    const HIGH: &str = "S-1-16-12288";
+    if !throng_platform::process::can_deelevate() {
+        eprintln!("skipped: the tests are not running as administrator");
+        return;
+    }
+    let env = Env::new();
+    let root = env.folder("rights");
+    // One field per line, so a SID is never wrapped across two rows.
+    let groups = || Some("whoami /groups /fo list".to_owned());
+    let mut admin = None;
+    env.seed(&root, |project, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(
+            first,
+            terminal(TerminalPanelConfig { startup_command: groups(), ..Default::default() }),
+        );
+        admin = Some(layout.add_panel(
+            project,
+            Some(first),
+            Placement::Right,
+            terminal(TerminalPanelConfig {
+                startup_command: groups(),
+                run_as_admin: true,
+                ..Default::default()
+            }),
+        ));
+    });
+    let admin = admin.unwrap();
+    let mut harness = env.app(None);
+    let normal = first_panel(harness.state());
+    let deadline = Instant::now() + WAIT;
+    loop {
+        harness.step();
+        let app = harness.state();
+        if text_of(app, normal).contains(MEDIUM) && text_of(app, admin).contains(HIGH) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for both terminals to list their groups:\n\
+             unticked {:?}: {}\nticked {:?}: {}",
+            app.terminal_status(normal),
+            text_of(app, normal),
+            app.terminal_status(admin),
+            text_of(app, admin),
+        );
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    assert!(
+        !text_of(harness.state(), normal).contains(HIGH),
+        "the unticked terminal has no administrator rights"
+    );
+    steps(&mut harness, 2);
+    harness.get_by_label("Panel 1");
+    harness.get_by_label("Panel 2 ADMIN");
+    // And throng itself says it runs as administrator.
+    harness.get_by_label("ADMIN");
 }

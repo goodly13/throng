@@ -25,6 +25,36 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// `path` resolved (symlinks, `.` and `..`), written as people and shells write it. Windows'
+/// own resolution gives a verbatim `\\?\C:\…` path, which Command Prompt cannot even start in;
+/// the prefix is dropped where the plain form names the same place (a drive or a share).
+pub fn canonicalize(path: &Path) -> io::Result<PathBuf> {
+    let resolved = fs::canonicalize(path)?;
+    if cfg!(windows) {
+        Ok(without_verbatim_prefix(&resolved.to_string_lossy()).map_or(resolved, PathBuf::from))
+    } else {
+        Ok(resolved)
+    }
+}
+
+/// The plain spelling of a verbatim Windows path: `\\?\C:\x` is `C:\x`, and `\\?\UNC\srv\x` is
+/// `\\srv\x`. `None` for a path with no such prefix, or one only the verbatim form can name (too
+/// long for the plain one).
+fn without_verbatim_prefix(path: &str) -> Option<String> {
+    const MAX_PATH: usize = 260;
+    let plain = if let Some(share) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{share}")
+    } else {
+        let local = path.strip_prefix(r"\\?\")?;
+        let drive = local.as_bytes();
+        if drive.len() < 3 || !drive[0].is_ascii_alphabetic() || drive[1] != b':' || drive[2] != b'\\' {
+            return None;
+        }
+        local.to_owned()
+    };
+    (plain.len() < MAX_PATH).then_some(plain)
+}
+
 #[cfg(unix)]
 fn sync_dir(dir: &Path) {
     if let Ok(handle) = fs::File::open(dir) {
@@ -209,6 +239,16 @@ pub fn open_with_default_app(target: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verbatim_windows_paths_lose_their_prefix_where_the_plain_form_names_the_same_place() {
+        assert_eq!(without_verbatim_prefix(r"\\?\C:\work\proj").as_deref(), Some(r"C:\work\proj"));
+        assert_eq!(without_verbatim_prefix(r"\\?\UNC\srv\share\p").as_deref(), Some(r"\\srv\share\p"));
+        assert_eq!(without_verbatim_prefix(r"C:\work"), None, "already plain");
+        assert_eq!(without_verbatim_prefix(r"\\?\Volume{0b1c}\x"), None, "no plain spelling");
+        let long = format!(r"\\?\C:\{}", "a".repeat(300));
+        assert_eq!(without_verbatim_prefix(&long), None, "too long to be plain");
+    }
 
     #[test]
     fn atomic_write_replaces_content_and_leaves_no_temp_files() {
