@@ -487,12 +487,17 @@ missing. [Open work](#open-work) collects every gap in one list.
     OpenGL libraries loaded at run time, and the oldest glibc the binary needs.
   - **macOS:** a universal `throng.app` (Apple silicon and Intel) in a `.dmg`. It is signed with a
     Developer ID and notarised when those credentials are given, and ad-hoc signed otherwise.
-  - **Windows:** a `.zip`. A release build opens no console window.
+  - **Windows:** a `.zip`, and a per-user `.msi` (built with WiX) that installs to
+    `%LOCALAPPDATA%\Programs\throng` without administrator rights, adds a Start menu shortcut, and
+    upgrades an older throng in place. A release build opens no console window.
 
-  The Package workflow builds each package, then installs, mounts or unpacks it, and runs it.
-  Inside an AppImage the daemon is started from the AppImage itself, so it keeps a mount of its own
-  after the UI's mount closes. The window carries throng's icon.
-  *Not yet:* an `.msi`, and publishing packages to a GitHub release for a version tag.
+  Every package carries `LICENSE` and `NOTICE`. The Package workflow builds each package, then
+  installs, mounts or unpacks it and runs it; the `.msi` is also uninstalled again. Inside an
+  AppImage the daemon is started from the AppImage itself, so it keeps a mount of its own after the
+  UI's mount closes. The window carries throng's icon.
+- **FR-048** Publishing. A `v<version>` tag, where `<version>` is the workspace version in
+  `Cargo.toml`, publishes every package as a GitHub release, once each has been installed and run
+  on its platform. A tag that names another version publishes nothing.
 
 ## Open work
 
@@ -502,8 +507,6 @@ In rough order of value:
    - Run the daemon and UI tests on Windows (they drive a Unix PTY today).
    - A live working directory and command memory for Windows shells (FR-014, FR-046).
    - Elevated and de-elevated terminals, and WSL shells.
-2. **Publishing.** An `.msi`, and attaching every package to a GitHub release for a `v*` tag
-   (FR-045).
 
 ## Done means
 
@@ -515,3 +518,4 @@ In rough order of value:
 - **SC-004** The headless Linux launch of the real binary (seeded project, Xvfb) produces a
   screenshot.
 - **SC-005** The Package workflow builds every package and runs each one from where a user would.
+- **SC-006** A version tag's release carries every package, and only after SC-005 holds for them.

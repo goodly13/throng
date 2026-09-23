@@ -119,10 +119,14 @@ there is a selection.
 - **Linux**: `.deb`, AppImage (with `appimagetool` on `PATH`) and `.tar.gz`.
 - **macOS**: a universal `.dmg`, signed and notarised when `APPLE_SIGNING_IDENTITY`, `APPLE_ID`,
   `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD` are set.
-- **Windows**: a `.zip`.
+- **Windows**: a `.zip`, and a per-user `.msi` (with WiX v5's `wix` on `PATH`) that needs no
+  administrator rights.
 
 The Package workflow runs the script on all three platforms. It checks each package by installing,
 mounting or unpacking it and running `throng --version` from it.
+
+To release, set the version in `Cargo.toml` and push a tag `v<version>`. The Package workflow
+builds and checks every package, then publishes them together as a GitHub release.
 
 ## Layout
 
