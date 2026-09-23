@@ -292,6 +292,25 @@ fn file_uri_path(uri: &str) -> Option<String> {
     (!path.is_empty() && !path.chars().any(char::is_control)).then_some(path)
 }
 
+/// A Git Bash, MSYS, Cygwin or WSL spelling of a Windows drive path, as Windows spells it:
+/// `/c/Users/x`, `/cygdrive/c/Users/x` and `/mnt/c/Users/x` all name `C:\Users\x`. `None` for
+/// anything else, including a longer first segment such as `/cc/x` or `/mnt/data/x`.
+#[must_use]
+pub fn windows_drive_form(written: &str) -> Option<String> {
+    let rest = written
+        .strip_prefix("/mnt/")
+        .or_else(|| written.strip_prefix("/cygdrive/"))
+        .or_else(|| written.strip_prefix('/'))?;
+    let mut chars = rest.chars();
+    let drive = chars.next().filter(char::is_ascii_alphabetic)?;
+    let tail = chars.as_str();
+    if !(tail.is_empty() || tail.starts_with('/')) {
+        return None;
+    }
+    let tail = tail.trim_start_matches('/').replace('/', "\\");
+    Some(format!("{}:\\{tail}", drive.to_ascii_uppercase()))
+}
+
 /// Percent-decoding that refuses what would decode to a control character (a link never
 /// smuggles one) or to invalid UTF-8.
 fn percent_decode(s: &str) -> Option<String> {
@@ -318,6 +337,18 @@ fn percent_decode(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_bash_msys_cygwin_and_wsl_drive_paths_have_a_windows_spelling() {
+        assert_eq!(windows_drive_form("/c/Users/me/a.rs").as_deref(), Some(r"C:\Users\me\a.rs"));
+        assert_eq!(windows_drive_form("/mnt/d/src/x.rs").as_deref(), Some(r"D:\src\x.rs"));
+        assert_eq!(windows_drive_form("/cygdrive/e/notes.md").as_deref(), Some(r"E:\notes.md"));
+        assert_eq!(windows_drive_form("/c").as_deref(), Some(r"C:\"));
+        assert_eq!(windows_drive_form("/mnt/c/").as_deref(), Some(r"C:\"));
+        for not_a_drive in ["/cc/x", "/mnt/data/x", "/usr/lib", "c/x", "/1/x", "", "/"] {
+            assert_eq!(windows_drive_form(not_a_drive), None, "{not_a_drive}");
+        }
+    }
 
     fn file(path: &str, line: Option<u32>, column: Option<u32>) -> Target {
         Target::File { path: path.into(), line, column }
