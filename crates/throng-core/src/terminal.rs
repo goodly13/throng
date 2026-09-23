@@ -85,10 +85,26 @@ pub struct ShellChild {
 /// command could not safely be typed back: empty, a control character, or too long.
 #[must_use]
 pub fn running_command(shell_argv: &[String], children: &[ShellChild]) -> Option<String> {
+    let child = newest_command(shell_argv, children)?;
+    memorable(child.argv.iter().map(|word| shell_quote(word)).collect::<Vec<_>>().join(" "))
+}
+
+/// [`running_command`] where each process's arguments are one raw command line (Windows, where a
+/// program parses its own command line): the line is kept as it was, never re-quoted.
+#[must_use]
+pub fn running_command_line(shell_line: &str, children: &[ShellChild]) -> Option<String> {
+    let child = newest_command(&[shell_line.to_owned()], children)?;
+    memorable(child.argv.join(" ").trim().to_owned())
+}
+
+fn newest_command<'a>(shell: &[String], children: &'a [ShellChild]) -> Option<&'a ShellChild> {
     let mut children: Vec<&ShellChild> = children.iter().collect();
     children.sort_by_key(|c| std::cmp::Reverse((c.started, c.pid)));
-    let child = children.into_iter().find(|c| !c.argv.is_empty() && c.argv != shell_argv)?;
-    let command = child.argv.iter().map(|word| shell_quote(word)).collect::<Vec<_>>().join(" ");
+    children.into_iter().find(|c| !c.argv.is_empty() && c.argv != shell)
+}
+
+/// A command memory can keep: one line, not empty, no control characters, not too long.
+fn memorable(command: String) -> Option<String> {
     (!command.trim().is_empty()
         && command.chars().count() <= MAX_REMEMBERED_COMMAND
         && !command.chars().any(char::is_control))
@@ -301,6 +317,25 @@ mod tests {
         assert_eq!(running_command(&shell, &[child(1, &["echo", &long])]), None, "too long");
         assert_eq!(running_command(&shell, &[child(1, &["printf", "a\nb"])]), None, "not one line");
         assert_eq!(running_command(&shell, &[child(1, &[])]), None);
+    }
+
+    #[test]
+    fn a_raw_command_line_is_kept_as_it_was() {
+        let shell = r#""C:\Windows\System32\cmd.exe""#;
+        let kids = [
+            ShellChild {
+                pid: 8,
+                started: 1,
+                argv: vec![r#""C:\Windows\system32\PING.EXE" -n 30 127.0.0.1"#.into()],
+            },
+            ShellChild { pid: 9, started: 2, argv: vec![shell.into()] },
+        ];
+        assert_eq!(
+            running_command_line(shell, &kids).as_deref(),
+            Some(r#""C:\Windows\system32\PING.EXE" -n 30 127.0.0.1"#),
+            "a copy of the shell is skipped, and the line is not re-quoted"
+        );
+        assert_eq!(running_command_line(shell, &[]), None);
     }
 
     #[test]

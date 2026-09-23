@@ -127,10 +127,15 @@ missing. [Open work](#open-work) collects every gap in one list.
   throng's palette, and so is the text-area size query in pixels. An input method's candidate
   window sits at the cursor, and its composition is drawn there, underlined. While it composes,
   Enter and Backspace belong to the input method.
+- **FR-049** The type picker offers the shells installed: on Linux and macOS the login shell and
+  those in `/etc/shells` and on `PATH`; on Windows PowerShell, Windows PowerShell, Command Prompt,
+  Git Bash and WSL, with each installed WSL distribution as a shell of its own (`wsl.exe -d
+  <name>`, Docker Desktop's own left out).
 - **FR-014** A terminal's working directory. throng reads each running shell's directory from
   outside it, every 1.5 s:
   - Linux: `/proc/<pid>/cwd`.
   - macOS: `proc_pidinfo`.
+  - Windows: the shell's process parameters block, read with `ReadProcessMemory` (64-bit shells).
 
   This way no hook is installed in anyone's shell, and every shell is covered. An OSC 7 report
   from this machine takes precedence: a nested shell or `tmux` hides the outer process's directory.
@@ -142,7 +147,6 @@ missing. [Open work](#open-work) collects every gap in one list.
 
   The type picker takes shell arguments (quoted as a shell would read them) and the per-panel
   choice "Reopen in the last directory", and remembers both.
-  *Not yet:* Windows has no live working directory beyond OSC 7.
 - **FR-015** A terminal's text (Copy All, and what the tests read) joins the rows the emulator
   wrapped, and counts a wide character once.
 - **FR-016** Quitting leaves terminals as they should be. Once quitting is confirmed, a terminal's
@@ -154,7 +158,9 @@ missing. [Open work](#open-work) collects every gap in one list.
     observation as the working directory, using one process snapshot for every terminal. What runs
     is the shell's most recently started direct child; a copy of the shell itself (a subshell) does
     not count, and neither do grandchildren. It is read from outside the shell (`/proc` on Linux,
-    libproc on macOS), so no shell needs a hook.
+    libproc on macOS, the process's own command line on Windows), so no shell needs a hook. On
+    Windows a console host beside a program is not a command, and the command line is kept as it
+    was written, since a Windows program parses its own.
   - **Keeping.** The last command seen is saved with the layout, so an end nobody saw (a crash, a
     daemon or machine restart) still captures it: the next cold start makes it the startup command
     before running it.
@@ -163,10 +169,8 @@ missing. [Open work](#open-work) collects every gap in one list.
     the startup command as it was. A shell that exits on its own captures nothing. *Leave Running*
     is not an end, so a busy terminal left running captures nothing yet.
   - **Limits.** A captured command is one line of at most 2,048 characters with no control
-    characters. Its words are quoted so the shell reads them back unchanged, and it runs on the
-    next cold start exactly as a typed startup command would.
-
-  *Not yet:* Windows (its shells report no running command).
+    characters. On Linux and macOS its words are quoted so the shell reads them back unchanged. It
+    runs on the next cold start exactly as a typed startup command would.
 - **FR-047** Manual reload. `terminal.reloadMode` (Preferences, *Start terminals*) is *automatic* by
   default.
   - **Dormant panels.** In *manual* mode, the terminals a saved layout holds when it loads do not
@@ -505,8 +509,7 @@ In rough order of value:
 
 1. **Windows as a first-class target.**
    - Run the daemon and UI tests on Windows (they drive a Unix PTY today).
-   - A live working directory and command memory for Windows shells (FR-014, FR-046).
-   - Elevated and de-elevated terminals, and WSL shells.
+   - Elevated and de-elevated terminals.
 
 ## Done means
 

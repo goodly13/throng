@@ -25,7 +25,50 @@ pub fn detect() -> Vec<ShellInfo> {
     for candidate in candidates() {
         push(candidate);
     }
+    // Each WSL distribution is a shell of its own, beside WSL's default one.
+    if let Some(wsl) = found.iter().find(|s| s.id == "wsl").map(|s| s.program.clone()) {
+        for name in wsl_distributions(&list_wsl(&wsl)) {
+            found.push(ShellInfo {
+                id: format!("wsl:{name}"),
+                label: format!("WSL: {name}"),
+                program: wsl.clone(),
+                args: vec!["-d".to_owned(), name],
+            });
+        }
+    }
     found
+}
+
+/// What `wsl.exe -l -q` prints: the installed distributions' names. Nothing where it cannot run.
+fn list_wsl(wsl: &Path) -> Vec<u8> {
+    let mut command = std::process::Command::new(wsl);
+    command.args(["-l", "-q"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command.output().map(|o| o.stdout).unwrap_or_default()
+}
+
+/// The distribution names in `wsl.exe -l -q`'s output (UTF-16, as wsl.exe writes it, or UTF-8),
+/// leaving out Docker Desktop's own, which are not shells.
+#[must_use]
+pub fn wsl_distributions(output: &[u8]) -> Vec<String> {
+    let (pairs, rest) = output.as_chunks::<2>();
+    let utf16 = rest.is_empty() && pairs.iter().any(|pair| pair[1] == 0);
+    let text = if utf16 {
+        let units: Vec<u16> = pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(output).into_owned()
+    };
+    text.lines()
+        .map(|line| line.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}' || c == '\0'))
+        .filter(|name| !name.is_empty() && !name.starts_with("docker-desktop"))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// The shell a new terminal uses: the configured id when it is installed, else the first detected.
@@ -149,6 +192,17 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), shells.len());
+    }
+
+    #[test]
+    fn wsl_distributions_are_read_from_its_utf16_listing() {
+        let listing: Vec<u8> = "Ubuntu-24.04\r\ndocker-desktop\r\nDebian\r\n\r\n"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(wsl_distributions(&listing), ["Ubuntu-24.04", "Debian"]);
+        assert_eq!(wsl_distributions(b"Arch\n"), ["Arch"], "UTF-8 too");
+        assert!(wsl_distributions(b"").is_empty());
     }
 
     #[test]

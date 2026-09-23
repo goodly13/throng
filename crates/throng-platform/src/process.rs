@@ -78,7 +78,11 @@ pub fn working_directory(pid: u32) -> Option<PathBuf> {
         use std::os::unix::ffi::OsStringExt;
         (!bytes.is_empty()).then(|| PathBuf::from(std::ffi::OsString::from_vec(bytes)))
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        win::current_directory(pid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = pid;
         None
@@ -86,13 +90,16 @@ pub fn working_directory(pid: u32) -> Option<PathBuf> {
 }
 
 /// A process snapshot, taken once for every terminal that needs one: on Linux the parent and
-/// start of every process; on macOS children are asked for one shell at a time, which is as cheap.
-/// Windows has no reading yet: every shell there reports no children.
+/// start of every process; on Windows the parent and program of every process; on macOS children
+/// are asked for one shell at a time, which is as cheap.
 #[derive(Debug, Default)]
 pub struct ProcessTable {
     /// (pid, parent, start) of every process.
     #[cfg(target_os = "linux")]
     entries: Vec<(u32, u32, u64)>,
+    /// (pid, parent, program) of every process.
+    #[cfg(windows)]
+    entries: Vec<(u32, u32, String)>,
 }
 
 impl ProcessTable {
@@ -114,7 +121,11 @@ impl ProcessTable {
                 .unwrap_or_default();
             Self { entries }
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(windows)]
+        {
+            Self { entries: win::processes().unwrap_or_default() }
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
         {
             Self::default()
         }
@@ -124,6 +135,33 @@ impl ProcessTable {
     /// [`throng_core::terminal::running_command`]). `None` when nothing runs or it cannot be read.
     #[must_use]
     pub fn running_command(&self, shell: u32) -> Option<String> {
+        #[cfg(windows)]
+        {
+            // A Windows program parses its own command line, so the line is kept as it was. The
+            // console hosts Windows starts beside a console program are not commands.
+            let shell_line = win::command_line(shell)?;
+            let children: Vec<throng_core::terminal::ShellChild> = self
+                .entries
+                .iter()
+                .filter(|(pid, parent, exe)| *parent == shell && *pid != shell && !is_console_host(exe))
+                .filter_map(|(pid, _, _)| {
+                    Some(throng_core::terminal::ShellChild {
+                        pid: *pid,
+                        started: win::started(*pid)?,
+                        argv: vec![win::command_line(*pid)?],
+                    })
+                })
+                .collect();
+            throng_core::terminal::running_command_line(&shell_line, &children)
+        }
+        #[cfg(not(windows))]
+        {
+            self.running_argv(shell)
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn running_argv(&self, shell: u32) -> Option<String> {
         let shell_argv = command_line(shell)?;
         let children: Vec<throng_core::terminal::ShellChild> = self
             .children(shell)
@@ -136,6 +174,7 @@ impl ProcessTable {
     }
 
     /// `shell`'s direct children, with when each started.
+    #[cfg(not(windows))]
     fn children(&self, shell: u32) -> Vec<(u32, u64)> {
         #[cfg(target_os = "linux")]
         {
@@ -410,10 +449,15 @@ mod win {
 
     use std::io;
 
+    use windows_sys::Wdk::System::Threading::{
+        NtQueryInformationProcess, ProcessBasicInformation, ProcessCommandLineInformation,
+    };
     use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_ACCESS_DENIED, GetLastError, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE,
+        CloseHandle, ERROR_ACCESS_DENIED, FILETIME, GetLastError, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE,
+        UNICODE_STRING,
     };
     use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
+    use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
     };
@@ -423,8 +467,9 @@ mod win {
         TerminateJobObject,
     };
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetExitCodeProcess, OpenProcess, OpenProcessToken,
-        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenProcessToken,
+        PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        PROCESS_VM_READ,
     };
 
     /// A handle closed on drop.
@@ -482,6 +527,182 @@ mod win {
             GetTokenInformation(token.0, TokenElevation, (&raw mut elevation).cast(), size, &raw mut written)
         };
         ok != 0 && elevation.TokenIsElevated != 0
+    }
+
+    /// Every process: its pid, its parent's, and its program's file name.
+    pub fn processes() -> Option<Vec<(u32, u32, String)>> {
+        // SAFETY: takes no pointers; failure returns INVALID_HANDLE_VALUE, handled by Owned::new.
+        let snapshot = Owned::new(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }).ok()?;
+        let mut entry = PROCESSENTRY32W {
+            dwSize: u32::try_from(std::mem::size_of::<PROCESSENTRY32W>()).ok()?,
+            ..PROCESSENTRY32W::default()
+        };
+        let mut out = Vec::new();
+        // SAFETY: the snapshot is open and `entry` is a PROCESSENTRY32W whose dwSize is set, as
+        // both calls require.
+        let mut more = unsafe { Process32FirstW(snapshot.0, &raw mut entry) } != 0;
+        while more {
+            let len = entry.szExeFile.iter().position(|c| *c == 0).unwrap_or(entry.szExeFile.len());
+            out.push((
+                entry.th32ProcessID,
+                entry.th32ParentProcessID,
+                String::from_utf16_lossy(&entry.szExeFile[..len]),
+            ));
+            // SAFETY: as above.
+            more = unsafe { Process32NextW(snapshot.0, &raw mut entry) } != 0;
+        }
+        Some(out)
+    }
+
+    /// When `pid` started (100 ns units since 1601).
+    pub fn started(pid: u32) -> Option<u64> {
+        // SAFETY: OpenProcess takes no pointers; a failure returns null, handled by Owned::new.
+        let process = Owned::new(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) }).ok()?;
+        let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+        // SAFETY: the handle is open with query rights, and each pointer is a FILETIME to write.
+        let ok = unsafe {
+            GetProcessTimes(process.0, &raw mut created, &raw mut exited, &raw mut kernel, &raw mut user)
+        };
+        (ok != 0).then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+    }
+
+    /// The command line `pid` was started with, as it was written.
+    pub fn command_line(pid: u32) -> Option<String> {
+        // SAFETY: OpenProcess takes no pointers; a failure returns null, handled by Owned::new.
+        let process = Owned::new(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) }).ok()?;
+        let mut needed = 0u32;
+        // SAFETY: a zero-length query only reports, through `needed`, the size the answer takes.
+        unsafe {
+            NtQueryInformationProcess(
+                process.0,
+                ProcessCommandLineInformation,
+                std::ptr::null_mut(),
+                0,
+                &raw mut needed,
+            );
+        }
+        if needed == 0 {
+            return None;
+        }
+        // Aligned for the UNICODE_STRING the answer starts with; its text follows in the buffer.
+        let mut buffer = vec![0u64; (needed as usize).div_ceil(8)];
+        let size = u32::try_from(buffer.len() * 8).ok()?;
+        // SAFETY: the buffer is writable for `size` bytes, which is what is passed.
+        let status = unsafe {
+            NtQueryInformationProcess(
+                process.0,
+                ProcessCommandLineInformation,
+                buffer.as_mut_ptr().cast(),
+                size,
+                &raw mut needed,
+            )
+        };
+        if status < 0 {
+            return None;
+        }
+        // SAFETY: a successful query leaves a UNICODE_STRING at the start of the buffer, whose
+        // text lies inside the same buffer for `Length` bytes.
+        let text = unsafe {
+            let header = &*buffer.as_ptr().cast::<UNICODE_STRING>();
+            if header.Buffer.is_null() {
+                return None;
+            }
+            std::slice::from_raw_parts(header.Buffer, usize::from(header.Length) / 2)
+        };
+        Some(String::from_utf16_lossy(text))
+    }
+
+    /// `NtQueryInformationProcess`'s basic information, as laid out on 64-bit Windows.
+    #[repr(C)]
+    #[derive(Default)]
+    struct BasicInformation {
+        exit_status: i32,
+        peb: usize,
+        affinity: usize,
+        priority: i32,
+        pid: usize,
+        parent: usize,
+    }
+
+    /// A counted UTF-16 string in another process: its length in bytes, and where its text is.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct RemoteString {
+        length: u16,
+        maximum: u16,
+        text: usize,
+    }
+
+    /// Read a `T` from another process's memory.
+    fn read<T: Copy + Default>(process: HANDLE, at: usize) -> Option<T> {
+        let mut value = T::default();
+        let mut done = 0usize;
+        // SAFETY: `value` is a `T` to write, of the size passed; the call writes at most that and
+        // reports how much.
+        let ok = unsafe {
+            ReadProcessMemory(
+                process,
+                at as *const _,
+                (&raw mut value).cast(),
+                std::mem::size_of::<T>(),
+                &raw mut done,
+            )
+        };
+        (ok != 0 && done == std::mem::size_of::<T>()).then_some(value)
+    }
+
+    /// A process's current directory, read from outside it: its process parameters block holds it
+    /// as the shell keeps it (64-bit processes; the offsets are the 64-bit ones).
+    pub fn current_directory(pid: u32) -> Option<std::path::PathBuf> {
+        if cfg!(not(target_pointer_width = "64")) {
+            return None;
+        }
+        let rights = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
+        // SAFETY: OpenProcess takes no pointers; a failure returns null, handled by Owned::new.
+        let process = Owned::new(unsafe { OpenProcess(rights, 0, pid) }).ok()?;
+        let mut info = BasicInformation::default();
+        let mut written = 0u32;
+        let size = u32::try_from(std::mem::size_of::<BasicInformation>()).ok()?;
+        // SAFETY: `info` is the structure this class writes, of exactly `size` bytes.
+        let status = unsafe {
+            NtQueryInformationProcess(
+                process.0,
+                ProcessBasicInformation,
+                (&raw mut info).cast(),
+                size,
+                &raw mut written,
+            )
+        };
+        if status < 0 || info.peb == 0 {
+            return None;
+        }
+        // PEB.ProcessParameters is at 0x20; its CurrentDirectory.DosPath at 0x38.
+        let parameters: usize = read(process.0, info.peb + 0x20)?;
+        let path: RemoteString = read(process.0, parameters + 0x38)?;
+        let units = usize::from(path.length) / 2;
+        if path.text == 0 || units == 0 {
+            return None;
+        }
+        let mut text = vec![0u16; units];
+        let mut done = 0usize;
+        // SAFETY: the buffer holds `units` UTF-16 units, which is the byte count passed.
+        let ok = unsafe {
+            ReadProcessMemory(
+                process.0,
+                path.text as *const _,
+                text.as_mut_ptr().cast(),
+                units * 2,
+                &raw mut done,
+            )
+        };
+        if ok == 0 || done != units * 2 {
+            return None;
+        }
+        let text = String::from_utf16_lossy(&text);
+        // Kept with a trailing backslash, which only a drive's root needs.
+        let trimmed = if text.len() > 3 { text.trim_end_matches('\\') } else { text.as_str() };
+        Some(std::path::PathBuf::from(trimmed))
     }
 
     /// The executable names of `pid`'s child processes.
@@ -633,6 +854,33 @@ mod tests {
         shell.wait().unwrap();
         assert!(!pid_alive(pid));
         assert_eq!(runs_a_command(pid), Some(false), "nothing is left under it");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_shells_directory_and_running_command_are_read_from_outside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut shell = Command::new("cmd.exe")
+            .args(["/d", "/c", "ping -n 30 127.0.0.1 >NUL"])
+            .current_dir(dir.path())
+            .spawn()
+            .unwrap();
+        let pid = shell.id();
+        let tree = ProcessTree::adopt(pid).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let command = loop {
+            if let Some(line) = ProcessTable::snapshot().running_command(pid) {
+                break line;
+            }
+            assert!(std::time::Instant::now() < deadline, "ping never showed as cmd's command");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        assert!(command.to_ascii_lowercase().contains("ping") && command.contains("-n 30"), "{command}");
+        let here = working_directory(pid).expect("cmd's working directory");
+        assert_eq!(std::fs::canonicalize(here).unwrap(), std::fs::canonicalize(dir.path()).unwrap());
+        tree.terminate();
+        shell.wait().unwrap();
+        assert_eq!(ProcessTable::snapshot().running_command(pid), None, "a gone shell runs nothing");
     }
 
     #[cfg(windows)]
