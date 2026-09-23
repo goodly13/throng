@@ -436,6 +436,14 @@ impl ProcessTree {
     }
 }
 
+/// Let the programs this process starts be interrupted by Ctrl+C. On Windows a process started in
+/// a new process group (as the daemon is, to stay detached) ignores Ctrl+C, and every process it
+/// starts inherits that, so no command in a terminal could be stopped. Nothing elsewhere.
+pub fn let_children_be_interrupted() {
+    #[cfg(windows)]
+    win::let_children_be_interrupted();
+}
+
 /// Whether this process can start others without its administrator rights. Only Windows can: an
 /// elevated process there hands a child a normal user's rights instead. (A Unix process's rights
 /// are its user's, and there is nothing to drop.)
@@ -821,6 +829,12 @@ mod win {
             more = unsafe { Process32NextW(snapshot.0, &raw mut entry) } != 0;
         }
         Some(out)
+    }
+
+    pub fn let_children_be_interrupted() {
+        // SAFETY: with no handler, FALSE restores normal Ctrl+C processing for this process, which
+        // its children inherit; it touches no memory.
+        unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 0) };
     }
 
     /// De-elevated spawns make their pipe ends inheritable for a moment; one at a time, so that no

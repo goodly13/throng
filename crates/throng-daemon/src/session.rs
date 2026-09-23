@@ -402,6 +402,23 @@ impl Session {
         writer.flush()
     }
 
+    /// End the session at the user's request, at once as far as its views can tell: each is told
+    /// it ended and detached, so nothing it shows can come from the dying shell. Its processes then
+    /// end as by [`Self::kill`].
+    pub fn end(self: &Arc<Self>, registry: &Registry) {
+        {
+            let mut state = self.state.lock();
+            if state.exited.is_none() {
+                let status = ExitStatus { code: None, user_killed: true };
+                for client in state.views.keys() {
+                    registry.send(*client, ServerMsg::Exited { terminal: self.id, status });
+                }
+                state.views.clear();
+            }
+        }
+        self.kill();
+    }
+
     /// End the session at the user's request: hang up its process groups, then escalate if anything
     /// ignores the hangup. No process the session started may outlive it (Principle III).
     pub fn kill(self: &Arc<Self>) {
