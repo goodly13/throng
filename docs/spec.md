@@ -453,15 +453,18 @@ missing. [Open work](#open-work) collects every gap in one list.
   - **Fixed editor chords.** In editors, undo, redo, select all and the clipboard keep the platform's
     chords.
 - **FR-043** Icon packs.
-  - **Tokens.** The glyphs the interface draws as text are tokens: tree folders, files and chevrons,
-    toolbar and find-bar buttons, and dismiss, add and reset.
+  - **Tokens.** The icons the interface draws are tokens: tree folders, files and chevrons,
+    toolbar and find-bar buttons, dismiss, add and reset, and a preview's back and forward.
   - **Packs.** A pack is `<config>/icon-packs/<name>/pack.json`, of the form
-    `{ "name": …, "tokens": { "<token>": "<glyph>" | { "glyph": "<glyph>" } } }`.
+    `{ "name": …, "tokens": { "<token>": "<glyph>" | "<file>.svg" | { "glyph": …, "image": … } } }`.
     `appearance.iconPack` names the pack in use.
-  - **Fallback.** A token keeps throng's own glyph if the pack leaves it out, sets it to an image, or
-    sets it to a glyph the fonts cannot draw. One notice says which tokens fell back.
-
-  *Not yet:* image (SVG) icons.
+  - **Images.** An image is an SVG or PNG file inside the pack's folder (links followed), of at
+    most 1 MiB, drawn at the size of the text beside it and named for assistive technology by the
+    icon's label. Controls keep their accessible names whichever way their icon draws.
+  - **Fallback.** A token keeps throng's own glyph if the pack leaves it out, or gives a glyph the
+    fonts cannot draw or an image that cannot be used (missing, outside the pack, too large, or of
+    another kind). One notice says which tokens fell back. An image that cannot be decoded draws the
+    glyph instead: the pack's, when it gives one beside the image, else throng's.
 - **FR-044** Every glyph drawn as text MUST exist in the bundled fonts, and a test enforces it.
 
 ### Packaging
@@ -490,7 +493,6 @@ In rough order of value:
    (FR-045).
 3. **Sub-workspaces** (FR-021): the single focus group, dragging a tab out to tear it off, and moving
    a panel rather than showing it.
-4. **Icon packs:** image (SVG) icons (FR-043).
 
 ## Done means
 

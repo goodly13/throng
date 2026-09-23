@@ -1142,9 +1142,14 @@ fn an_icon_pack_draws_the_tree_and_what_it_cannot_draw_keeps_throngs_icon() {
     // U+E000 is a private-use character no bundled font draws.
     std::fs::write(
         pack.join("pack.json"),
-        r#"{"name":"Letters","tokens":{"file":"F","folder":"D","refresh":"","newFile":"new.svg"}}"#,
+        r#"{"name":"Letters","tokens":{"file":"F","folder":"D","refresh":"","newFile":"new.svg","newFolder":"img/plus.svg","dismiss":"../escape.svg"}}"#,
     )
     .unwrap();
+    // An SVG in the pack draws; one outside it is refused.
+    std::fs::create_dir_all(pack.join("img")).unwrap();
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><path d="M7 2h2v5h5v2H9v5H7V9H2V7h5z" fill="#3a8"/></svg>"##;
+    std::fs::write(pack.join("img/plus.svg"), svg).unwrap();
+    std::fs::write(pack.parent().unwrap().join("escape.svg"), svg).unwrap();
     std::fs::write(env.dirs.settings_file(), r#"{"appearance":{"iconPack":"letters"}}"#).unwrap();
     let (_root, mut harness) = project_with(&env, &[("a.txt", "a\n"), ("dir/b.txt", "b\n")]);
     steps(&mut harness, 2);
@@ -1153,6 +1158,19 @@ fn an_icon_pack_draws_the_tree_and_what_it_cannot_draw_keeps_throngs_icon() {
     let notice = harness.state().notices().iter().find(|n| n.key == "icons:problems").cloned();
     let detail = notice.and_then(|n| n.detail).unwrap_or_default();
     assert!(detail.contains("refresh") && detail.contains("newFile"), "{detail}");
+    assert!(detail.contains("dismiss") && !detail.contains("newFolder"), "{detail}");
+    let uri = format!("file://{}", std::fs::canonicalize(pack.join("img/plus.svg")).unwrap().display());
+    let deadline = Instant::now() + WAIT;
+    loop {
+        harness.step();
+        let poll =
+            harness.ctx.try_load_texture(&uri, egui::TextureOptions::default(), egui::SizeHint::default());
+        if matches!(poll, Ok(egui::load::TexturePoll::Ready { .. })) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the pack's SVG never drew: {:?}", poll.err());
+        std::thread::sleep(Duration::from_millis(15));
+    }
 
     // Back to throng's own icons once the setting is cleared.
     std::fs::write(env.dirs.settings_file(), r#"{"appearance":{"iconPack":""}}"#).unwrap();

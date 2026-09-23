@@ -573,8 +573,7 @@ fn tab_strip(
                 }
             });
         }
-        if ui.button(crate::icons::glyph(ui.ctx(), "add")).on_hover_text("New tab with a terminal").clicked()
-        {
+        if ui.button(crate::icons::atom(ui.ctx(), "add")).on_hover_text("New tab with a terminal").clicked() {
             ctx.actions.push(PanelAction::NewTab);
         }
     });

@@ -241,7 +241,7 @@ impl Prefs {
                         }
                         if !p.keymap.is_default(c.id)
                             && ui
-                                .small_button(crate::icons::glyph(ui.ctx(), "retry"))
+                                .small_button(crate::icons::atom(ui.ctx(), "retry"))
                                 .on_hover_text("Back to the default")
                                 .clicked()
                         {
@@ -444,7 +444,7 @@ fn settings_ui(ui: &mut Ui, p: &mut PrefsCtx<'_>) -> bool {
                     changed |= p.settings.set(def.key, value);
                 }
                 if ui
-                    .small_button(crate::icons::glyph(ui.ctx(), "retry"))
+                    .small_button(crate::icons::atom(ui.ctx(), "retry"))
                     .on_hover_text("Reset to default")
                     .clicked()
                 {

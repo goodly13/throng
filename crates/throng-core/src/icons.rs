@@ -1,9 +1,11 @@
-//! Icon packs: glyphs for the icons the interface draws as text, by token. A pack lives in `<config>/icon-packs/<name>/pack.json`
-//! as `{ "name": …, "tokens": { "folder": "📁", "file": { "glyph": "📄" } } }`. A token a pack does
-//! not set, sets to an image, or sets to a glyph the fonts cannot draw keeps throng's own glyph:
-//! a half-finished pack never leaves a hole in the interface.
+//! Icon packs: the icons the interface draws, by token, as glyphs or images. A pack lives in
+//! `<config>/icon-packs/<name>/pack.json` as
+//! `{ "name": …, "tokens": { "folder": "📁", "file": { "glyph": "📄" }, "refresh": "spin.svg" } }`.
+//! A token a pack does not set, or sets to a glyph the fonts cannot draw or an image that cannot be
+//! used, keeps throng's own glyph: a half-finished pack never leaves a hole in the interface.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -46,8 +48,8 @@ pub struct IconPack {
     /// The name the pack gives itself, if any.
     pub title: Option<String>,
     glyphs: BTreeMap<String, String>,
-    /// Tokens the pack sets to an image, which this app does not draw.
-    pub images: Vec<String>,
+    /// Tokens the pack sets to an image, and the image's file as written (relative to the pack).
+    pub images: BTreeMap<String, String>,
 }
 
 impl IconPack {
@@ -63,22 +65,22 @@ impl IconPack {
         let Some(tokens) = object.get("tokens").and_then(Value::as_object) else { return Ok(pack) };
         for (token, raw) in tokens {
             let (glyph, image) = match raw {
-                Value::String(s) if is_image(s) => (None, true),
-                Value::String(s) => (Some(s.clone()), false),
-                Value::Object(o) => match (o.get("glyph").and_then(Value::as_str), o.get("image")) {
-                    (Some(g), _) => (Some(g.to_owned()), false),
-                    (None, Some(_)) => (None, true),
-                    _ => (None, false),
-                },
-                _ => (None, false),
+                Value::String(s) if is_image(s) => (None, Some(s.clone())),
+                Value::String(s) => (Some(s.clone()), None),
+                Value::Object(o) => {
+                    let image = o.get("image").and_then(Value::as_str).filter(|s| !s.trim().is_empty());
+                    (o.get("glyph").and_then(Value::as_str).map(str::to_owned), image.map(str::to_owned))
+                }
+                _ => (None, None),
             };
+            // An image wins; a glyph beside it is what shows if the image cannot be used.
+            if let Some(image) = image {
+                pack.images.insert(token.clone(), image);
+            }
             if let Some(glyph) = glyph.filter(|g| !g.trim().is_empty()) {
                 pack.glyphs.insert(token.clone(), glyph);
-            } else if image {
-                pack.images.push(token.clone());
             }
         }
-        pack.images.sort();
         Ok(pack)
     }
 
@@ -93,33 +95,50 @@ fn is_image(value: &str) -> bool {
     lower.ends_with(".svg") || lower.ends_with(".png")
 }
 
-/// The glyph drawn for each icon: a pack's where it has one the fonts can draw, else throng's.
+/// What each icon draws: a pack's image where it has one that can be used, else its glyph where
+/// the fonts can draw it, else throng's glyph. The glyph is kept beside an image, for anywhere
+/// the image cannot load.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IconSet {
     glyphs: BTreeMap<&'static str, String>,
+    images: BTreeMap<&'static str, PathBuf>,
 }
 
 impl Default for IconSet {
     fn default() -> Self {
-        Self { glyphs: ICONS.iter().map(|i| (i.token, i.glyph.to_owned())).collect() }
+        Self {
+            glyphs: ICONS.iter().map(|i| (i.token, i.glyph.to_owned())).collect(),
+            images: BTreeMap::new(),
+        }
     }
 }
 
 impl IconSet {
-    /// The set `pack` makes, keeping only glyphs `drawable` accepts. Also returns the tokens that
-    /// kept throng's glyph because the pack's could not be drawn (images included).
+    /// The set `pack` makes. `drawable` says whether the fonts can draw a glyph; `image` finds the
+    /// file an image token names, or `None` when it cannot be used. Also returns the tokens the
+    /// pack set that kept throng's glyph because what it gave could not be used.
     #[must_use]
-    pub fn with_pack(pack: &IconPack, drawable: impl Fn(&str) -> bool) -> (Self, Vec<String>) {
+    pub fn with_pack(
+        pack: &IconPack,
+        drawable: impl Fn(&str) -> bool,
+        image: impl Fn(&str) -> Option<PathBuf>,
+    ) -> (Self, Vec<String>) {
         let mut set = Self::default();
         let mut kept = Vec::new();
         for def in ICONS {
-            match pack.glyph(def.token) {
-                Some(glyph) if drawable(glyph) => {
-                    set.glyphs.insert(def.token, glyph.to_owned());
-                }
-                Some(_) => kept.push(def.token.to_owned()),
-                None if pack.images.iter().any(|t| t == def.token) => kept.push(def.token.to_owned()),
-                None => {}
+            let glyph = pack.glyph(def.token);
+            if let Some(glyph) = glyph.filter(|g| drawable(g)) {
+                set.glyphs.insert(def.token, glyph.to_owned());
+            }
+            let file = pack.images.get(def.token).and_then(|written| image(written));
+            let has_image = file.is_some();
+            if let Some(file) = file {
+                set.images.insert(def.token, file);
+            }
+            let asked = glyph.is_some() || pack.images.contains_key(def.token);
+            let got = has_image || glyph.is_some_and(&drawable);
+            if asked && !got {
+                kept.push(def.token.to_owned());
             }
         }
         (set, kept)
@@ -129,6 +148,12 @@ impl IconSet {
     #[must_use]
     pub fn get(&self, token: &str) -> &str {
         self.glyphs.get(token).map_or("", String::as_str)
+    }
+
+    /// The image file for `token`, when the pack gives one.
+    #[must_use]
+    pub fn image(&self, token: &str) -> Option<&Path> {
+        self.images.get(token).map(PathBuf::as_path)
     }
 }
 
@@ -147,19 +172,28 @@ mod tests {
         assert_eq!(pack.glyph("file"), Some("D"));
         assert_eq!(pack.glyph("add"), None);
         assert_eq!(pack.glyph("retry"), None, "an empty glyph is no glyph");
-        assert_eq!(pack.images, ["dismiss", "refresh"]);
+        assert_eq!(
+            pack.images.iter().map(|(t, f)| (t.as_str(), f.as_str())).collect::<Vec<_>>(),
+            [("dismiss", "x.png"), ("refresh", "spin.svg")]
+        );
         assert!(IconPack::parse("x", "[").is_err() && IconPack::parse("x", "[]").is_err());
         assert!(IconPack::parse("x", "{}").is_ok(), "a pack of nothing is throng's own");
     }
 
     #[test]
-    fn a_glyph_the_fonts_cannot_draw_keeps_throngs_and_says_so() {
-        let pack = IconPack::parse("p", r#"{"tokens":{"folder":"F","file":"?","refresh":"r.svg"}}"#).unwrap();
-        let (set, kept) = IconSet::with_pack(&pack, |g| g != "?");
+    fn a_glyph_the_fonts_cannot_draw_or_an_image_that_cannot_be_used_keeps_throngs_and_says_so() {
+        let text = r#"{"tokens":{"folder":"F","file":"?","refresh":"r.svg","add":"gone.svg",
+            "dismiss":{"image":"x.svg","glyph":"X"}}}"#;
+        let pack = IconPack::parse("p", text).unwrap();
+        let usable = |written: &str| (written != "gone.svg").then(|| PathBuf::from("/packs/p").join(written));
+        let (set, kept) = IconSet::with_pack(&pack, |g| g != "?", usable);
         assert_eq!(set.get("folder"), "F");
         assert_eq!(set.get("file"), "🗋");
         assert_eq!(set.get("chevron"), "⏵");
-        assert_eq!(kept, ["file", "refresh"]);
+        assert_eq!(set.image("refresh"), Some(Path::new("/packs/p/r.svg")));
+        assert_eq!((set.image("dismiss"), set.get("dismiss")), (Some(Path::new("/packs/p/x.svg")), "X"));
+        assert_eq!((set.image("add"), set.get("add")), (None, "+"), "a missing image keeps throng's");
+        assert_eq!(kept, ["file", "add"]);
         assert_eq!(IconSet::default().get("nope"), "");
     }
 }
