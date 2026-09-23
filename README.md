@@ -57,7 +57,8 @@ never open a release build's data.
 - **Links**: file paths (with `:line:col`), web addresses and mail links are underlined in editors
   and terminal output. Ctrl+click (Cmd+click on macOS) follows one, and right-click offers more.
 - **Markdown previews**: choose Open Preview on a `.md` file's editor tab or in the tree. The preview
-  sits beside its editor and follows unsaved edits.
+  sits beside its editor and follows unsaved edits. It draws the project's images (and `https:`
+  ones, which a setting can turn off), and Back and Forward retrace the links you followed.
 - **Find in Files** is a panel of its own. Results are grouped by file, and a click opens the file
   at the match. You can also replace across files, after a warning that it cannot be undone.
 - **Sub-workspaces**: right-click a terminal, editor or preview tab → *Sync to Sub-workspace*. The
@@ -92,6 +93,7 @@ The default chords (Cmd instead of Ctrl on macOS):
 | Ctrl+F, F3 / Shift+F3, Esc | Find in the active editor or terminal; next / previous; close |
 | Ctrl+H (Cmd+Alt+F on macOS) | Replace in the active editor |
 | Ctrl+G | Go to line |
+| Alt+Left / Alt+Right | Back / forward in a focused Markdown preview |
 | Ctrl+Shift+F / Ctrl+Shift+H | Find / replace in files |
 | Ctrl+Shift+D / Ctrl+Shift+E | Split the active panel right / down with a terminal |
 | Ctrl+Shift+W | Close the active panel |

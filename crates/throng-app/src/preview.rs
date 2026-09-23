@@ -55,6 +55,12 @@ pub struct PreviewState {
     pub anchor: Option<String>,
     /// Re-read now, ignoring the delay (Refresh).
     pub refresh: bool,
+    /// How far down it is scrolled, as last drawn.
+    pub scroll: f32,
+    /// Scroll here next frame (a step back or forward in its history).
+    pub restore: Option<f32>,
+    /// It has the keyboard: pressed in last (see the preview panel).
+    pub has_keys: bool,
     code: Vec<CodeCache>,
     theme_key: usize,
     /// Each image source's loadable address, or `None` when it stays alt text: worked out once per
@@ -74,6 +80,9 @@ impl PreviewState {
             problem: None,
             anchor,
             refresh: false,
+            scroll: 0.0,
+            restore: None,
+            has_keys: false,
             code: Vec::new(),
             theme_key: 0,
             images: HashMap::new(),

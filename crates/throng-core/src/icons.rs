@@ -34,6 +34,8 @@ pub const ICONS: &[IconDef] = &[
     icon("retry", "Reset to default", "↺"),
     icon("findNext", "Next match", "⏷"),
     icon("findPrevious", "Previous match", "⏶"),
+    icon("back", "Back", "⏴"),
+    icon("forward", "Forward", "⏵"),
 ];
 
 /// A pack as its file describes it.

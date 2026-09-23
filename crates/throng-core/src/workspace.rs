@@ -5,7 +5,7 @@
 //! widget at the edge, so upgrading the widget can never make a saved layout unreadable.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -114,11 +114,114 @@ pub struct MirrorPanelConfig {
     pub panel: PanelId,
 }
 
-/// What a preview panel remembers: the file it shows.
+/// What a preview panel remembers: the file it shows, and where it has been.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewPanelConfig {
     pub path: PathBuf,
+    /// Where it has been, oldest first; `at` is the entry it shows. Empty until it first moves on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<HistoryEntry>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub at: usize,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes a reference
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// One place a preview has shown: a file, and how far down it had been read when it was left.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEntry {
+    pub path: PathBuf,
+    /// The scroll offset in points.
+    #[serde(default)]
+    pub scroll: u32,
+}
+
+impl PreviewPanelConfig {
+    #[must_use]
+    pub fn new(path: PathBuf) -> Self {
+        Self { path, history: Vec::new(), at: 0 }
+    }
+
+    /// The history as it stands, starting it (one entry, the file shown) when there is none or
+    /// what was saved no longer matches the file shown.
+    fn started(&mut self) {
+        if self.history.get(self.at).is_none_or(|e| e.path != self.path) {
+            self.history = vec![HistoryEntry { path: self.path.clone(), scroll: 0 }];
+            self.at = 0;
+        }
+    }
+
+    /// Show `path` next: a link followed in place, or a heading in the same file (an entry of its
+    /// own, so Back returns to where the reader was). `scroll` is how far down the entry being left
+    /// was read. The entries after it go, `path` becomes the newest, and at most `cap` are kept,
+    /// oldest dropped first.
+    pub fn open(&mut self, path: PathBuf, scroll: u32, cap: usize) {
+        self.started();
+        self.history[self.at].scroll = scroll;
+        self.history.truncate(self.at + 1);
+        self.history.push(HistoryEntry { path: path.clone(), scroll: 0 });
+        self.path = path;
+        self.at = self.history.len() - 1;
+        self.cap(cap);
+    }
+
+    /// Step to the entry before this one; `scroll` is how far down this one was read.
+    pub fn back(&mut self, scroll: u32) -> Option<HistoryEntry> {
+        self.started();
+        self.step(scroll, self.at.checked_sub(1)?)
+    }
+
+    /// Step to the entry after this one; `scroll` is how far down this one was read.
+    pub fn forward(&mut self, scroll: u32) -> Option<HistoryEntry> {
+        self.started();
+        let next = self.at + 1;
+        (next < self.history.len()).then_some(())?;
+        self.step(scroll, next)
+    }
+
+    fn step(&mut self, scroll: u32, to: usize) -> Option<HistoryEntry> {
+        self.history[self.at].scroll = scroll;
+        self.at = to;
+        let entry = self.history[to].clone();
+        self.path = entry.path.clone();
+        Some(entry)
+    }
+
+    #[must_use]
+    pub fn can_back(&self) -> bool {
+        self.at > 0 && self.history.get(self.at).is_some_and(|e| e.path == self.path)
+    }
+
+    #[must_use]
+    pub fn can_forward(&self) -> bool {
+        self.at + 1 < self.history.len() && self.history.get(self.at).is_some_and(|e| e.path == self.path)
+    }
+
+    /// Keep at most `cap` entries (at least one), dropping the oldest and never the current one.
+    pub fn cap(&mut self, cap: usize) {
+        let excess = self.history.len().saturating_sub(cap.max(1));
+        let drop = excess.min(self.at);
+        self.history.drain(..drop);
+        self.at -= drop;
+        self.history.truncate(cap.max(1).max(self.at + 1));
+    }
+
+    /// A file moved: every entry naming it, or a file under it, follows.
+    pub fn rebase(&mut self, rebased: impl Fn(&Path) -> Option<PathBuf>) {
+        if let Some(path) = rebased(&self.path) {
+            self.path = path;
+        }
+        for entry in &mut self.history {
+            if let Some(path) = rebased(&entry.path) {
+                entry.path = path;
+            }
+        }
+    }
 }
 
 /// What a Find in Files panel remembers across a restart: the query, never the results.
@@ -570,6 +673,68 @@ fn next_numbered<'a>(prefix: &str, taken: impl Iterator<Item = &'a str>) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_previews_history_steps_back_and_forward_and_a_new_file_drops_what_was_ahead() {
+        let p = |s: &str| PathBuf::from(s);
+        let mut config = PreviewPanelConfig::new(p("/a.md"));
+        assert!(!config.can_back() && !config.can_forward());
+        config.open(p("/b.md"), 120, 10);
+        config.open(p("/c.md"), 40, 10);
+        assert_eq!((config.path.clone(), config.at, config.history.len()), (p("/c.md"), 2, 3));
+        let back = config.back(7).unwrap();
+        assert_eq!((back.path, back.scroll), (p("/b.md"), 40));
+        assert_eq!(config.back(0).unwrap().scroll, 120, "each entry keeps where it was read to");
+        assert!(config.back(0).is_none() && !config.can_back());
+        assert_eq!(config.forward(0).unwrap().path, p("/b.md"));
+        assert!(config.can_forward());
+        config.open(p("/d.md"), 0, 10);
+        assert!(!config.can_forward(), "opening a file drops what was ahead");
+        assert_eq!(
+            config.history.iter().map(|e| e.path.clone()).collect::<Vec<_>>(),
+            [p("/a.md"), p("/b.md"), p("/d.md")]
+        );
+
+        // A heading in the same file is an entry of its own, from the top of the file too.
+        config.open(p("/d.md"), 0, 10);
+        config.open(p("/d.md"), 300, 10);
+        assert_eq!(config.history.len(), 5);
+        // Each step passes where the reader is: the place the last step restored.
+        assert_eq!(config.back(20).unwrap(), HistoryEntry { path: p("/d.md"), scroll: 300 });
+        assert_eq!(config.back(300).unwrap(), HistoryEntry { path: p("/d.md"), scroll: 0 }, "the top");
+        assert_eq!(config.forward(0).unwrap(), HistoryEntry { path: p("/d.md"), scroll: 300 });
+        assert_eq!(config.forward(300).unwrap(), HistoryEntry { path: p("/d.md"), scroll: 20 });
+    }
+
+    #[test]
+    fn a_previews_history_is_capped_oldest_first_and_follows_a_move() {
+        let p = |s: &str| PathBuf::from(s);
+        let mut config = PreviewPanelConfig::new(p("/0.md"));
+        for i in 1..6 {
+            config.open(p(&format!("/{i}.md")), 0, 3);
+        }
+        assert_eq!(
+            config.history.iter().map(|e| e.path.clone()).collect::<Vec<_>>(),
+            [p("/3.md"), p("/4.md"), p("/5.md")]
+        );
+        assert_eq!(config.at, 2);
+        config.back(0);
+        config.back(0);
+        config.cap(1);
+        assert_eq!(
+            (config.history.len(), config.at, config.path.clone()),
+            (1, 0, p("/3.md")),
+            "never the current"
+        );
+
+        config.rebase(|path| path.strip_prefix("/").ok().map(|rest| p("/moved").join(rest)));
+        assert_eq!(config.path, p("/moved/3.md"));
+        assert_eq!(config.history[0].path, p("/moved/3.md"));
+
+        let old: PreviewPanelConfig = serde_json::from_str(r#"{"path":"/x.md"}"#).unwrap();
+        assert_eq!(old, PreviewPanelConfig::new(p("/x.md")), "a config saved before history reads");
+        assert_eq!(serde_json::to_string(&old).unwrap(), r#"{"path":"/x.md"}"#);
+    }
 
     fn project() -> ProjectId {
         ProjectId::new()

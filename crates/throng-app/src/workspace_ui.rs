@@ -12,7 +12,9 @@ use throng_core::paths::PathRules;
 use throng_core::project::Project;
 use throng_core::settings::Settings;
 use throng_core::terminal::TerminalPanelConfig;
-use throng_core::workspace::{EditorPanelConfig, Layout, Panel, PanelKind, Placement, SearchPanelConfig};
+use throng_core::workspace::{
+    EditorPanelConfig, Layout, Panel, PanelKind, Placement, PreviewPanelConfig, SearchPanelConfig,
+};
 use throng_daemon::Client;
 use throng_protocol::Request;
 
@@ -87,6 +89,14 @@ pub enum PanelAction {
     OpenPreview(PathBuf),
     /// Open a file in an editor (a preview's route back to its source).
     OpenInEditor(PathBuf),
+    /// Back or forward in a preview's history.
+    PreviewBack(PanelId),
+    PreviewForward(PanelId),
+    /// A heading in the document a preview shows: scrolled to, as a place of its own in history.
+    PreviewJump {
+        panel: PanelId,
+        anchor: String,
+    },
     /// A link in a preview.
     PreviewLink {
         panel: PanelId,
@@ -231,7 +241,7 @@ fn mirror_ui(ui: &mut Ui, panel: PanelId, tab_title: &str, ctx: &mut PanelCtx<'_
             terminal_ui(ui, &source.project, source.panel, panel, config, label, ctx);
         }
         PanelKind::Editor(config) => editor_ui(ui, source.panel, panel, &config, ctx),
-        PanelKind::Preview(config) => preview_ui(ui, panel, &config.path, ctx),
+        PanelKind::Preview(config) => preview_ui(ui, panel, &config, ctx),
         _ => {
             ui.weak("This kind of panel is not shown in sub-workspaces.");
         }
@@ -317,7 +327,7 @@ impl TabViewer for Viewer<'_, '_> {
             }
             PanelKind::Editor(config) => editor_ui(ui, panel, panel, &config, self.ctx),
             PanelKind::Search(config) => search_ui(ui, panel, config, self.ctx),
-            PanelKind::Preview(config) => preview_ui(ui, panel, &config.path, self.ctx),
+            PanelKind::Preview(config) => preview_ui(ui, panel, &config, self.ctx),
             PanelKind::Mirror(_) => mirror_ui(ui, panel, &self.tab_title, self.ctx),
         }
     }
@@ -388,6 +398,19 @@ impl TabViewer for Viewer<'_, '_> {
             }
             PanelKind::Preview(config) => {
                 ui.separator();
+                let ctx = ui.ctx().clone();
+                let back =
+                    egui::Button::new("Back").shortcut_text(crate::keymap::label(&ctx, "navigate.back"));
+                if ui.add_enabled(config.can_back(), back).clicked() {
+                    self.ctx.actions.push(PanelAction::PreviewBack(panel));
+                    ui.close();
+                }
+                let forward = egui::Button::new("Forward")
+                    .shortcut_text(crate::keymap::label(&ctx, "navigate.forward"));
+                if ui.add_enabled(config.can_forward(), forward).clicked() {
+                    self.ctx.actions.push(PanelAction::PreviewForward(panel));
+                    ui.close();
+                }
                 if ui.button("Refresh").clicked() {
                     if let Some(state) = self.ctx.previews.get_mut(&panel) {
                         state.refresh = true;
@@ -1183,8 +1206,9 @@ fn search_ui(ui: &mut Ui, panel: PanelId, mut config: SearchPanelConfig, ctx: &m
 /// A preview panel: a small toolbar, one inline notice when the file cannot be shown,
 /// and the rendered document. It follows the open document when there is one, else the
 /// disk, and keeps its scroll position across updates.
-fn preview_ui(ui: &mut Ui, panel: PanelId, path: &std::path::Path, ctx: &mut PanelCtx<'_>) {
+fn preview_ui(ui: &mut Ui, panel: PanelId, config: &PreviewPanelConfig, ctx: &mut PanelCtx<'_>) {
     use std::time::Duration;
+    let path = config.path.as_path();
     let state = ctx
         .previews
         .entry(panel)
@@ -1208,7 +1232,44 @@ fn preview_ui(ui: &mut Ui, panel: PanelId, path: &std::path::Path, ctx: &mut Pan
     if let Some(again) = again {
         ui.ctx().request_repaint_after(again);
     }
+    // A preview has the keyboard from a press inside it until a press anywhere else. It holds no
+    // egui focus (it has no text to edit), so it keeps that itself.
+    let hovered = ui.ui_contains_pointer();
+    if ui.input(|i| i.pointer.any_pressed()) {
+        state.has_keys = hovered;
+    }
+    let focused = state.has_keys;
+    if focused {
+        ctx.focus.panel = Some(panel);
+    }
+    let (key_back, key_forward) = if focused {
+        let ctx = ui.ctx();
+        (
+            crate::keymap::take(ctx, "navigate.back", Some(throng_core::keymap::Scope::Preview)),
+            crate::keymap::take(ctx, "navigate.forward", Some(throng_core::keymap::Scope::Preview)),
+        )
+    } else {
+        (false, false)
+    };
+    // The mouse's own back and forward buttons, over the preview.
+    let (mouse_back, mouse_forward) = ui.input(|i| {
+        (
+            hovered && i.pointer.button_pressed(egui::PointerButton::Extra1),
+            hovered && i.pointer.button_pressed(egui::PointerButton::Extra2),
+        )
+    });
     ui.horizontal(|ui| {
+        let ctx_ = ui.ctx().clone();
+        let back = crate::icons::token_button(ui, "back", "Back", config.can_back())
+            .on_hover_text(crate::app::hint(&ctx_, "Back", "navigate.back"));
+        if (back.clicked() || key_back || mouse_back) && config.can_back() {
+            ctx.actions.push(PanelAction::PreviewBack(panel));
+        }
+        let forward = crate::icons::token_button(ui, "forward", "Forward", config.can_forward())
+            .on_hover_text(crate::app::hint(&ctx_, "Forward", "navigate.forward"));
+        if (forward.clicked() || key_forward || mouse_forward) && config.can_forward() {
+            ctx.actions.push(PanelAction::PreviewForward(panel));
+        }
         if ui.small_button("Refresh").on_hover_text("Show the latest now").clicked() {
             state.refresh = true;
             ui.ctx().request_repaint();
@@ -1237,26 +1298,25 @@ fn preview_ui(ui: &mut Ui, panel: PanelId, path: &std::path::Path, ctx: &mut Pan
             remote: ctx.settings.preview_remote_images(),
         },
     };
-    let links = egui::ScrollArea::vertical()
-        .id_salt(("preview", panel))
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.set_max_width(ui.available_width().min(900.0));
-            crate::preview::show(ui, state, &style)
-        })
-        .inner;
-    for (href, action) in links {
-        // A heading in this document scrolls there; anything else is the app's to follow.
+    let mut area = egui::ScrollArea::vertical().id_salt(("preview", panel)).auto_shrink([false, false]);
+    // A step back or forward puts the reader where they were.
+    if let Some(offset) = state.restore.take() {
+        area = area.vertical_scroll_offset(offset);
+    }
+    let output = area.show(ui, |ui| {
+        ui.set_max_width(ui.available_width().min(900.0));
+        crate::preview::show(ui, state, &style)
+    });
+    state.scroll = output.state.offset.y;
+    for (href, action) in output.inner {
+        // A heading in this document is a place of its own; anything else is the app's to follow.
         match href.strip_prefix('#') {
             Some(anchor) if action == crate::links::LinkAction::Follow => {
-                state.anchor = Some(crate::markdown::slug(anchor));
+                ctx.actions.push(PanelAction::PreviewJump { panel, anchor: crate::markdown::slug(anchor) });
                 ui.ctx().request_repaint();
             }
             _ => ctx.actions.push(PanelAction::PreviewLink { panel, href, action }),
         }
-    }
-    if ui.ui_contains_pointer() && ui.input(|i| i.pointer.any_pressed()) {
-        ctx.focus.panel = Some(panel);
     }
 }
 

@@ -152,16 +152,27 @@ fn retarget(action: PanelAction, panel: PanelId) -> PanelAction {
         PanelAction::GotoLine(_) => PanelAction::GotoLine(panel),
         PanelAction::PickLanguage(_) => PanelAction::PickLanguage(panel),
         PanelAction::PreviewLink { href, action, .. } => PanelAction::PreviewLink { panel, href, action },
+        PanelAction::PreviewBack(_) => PanelAction::PreviewBack(panel),
+        PanelAction::PreviewForward(_) => PanelAction::PreviewForward(panel),
+        PanelAction::PreviewJump { anchor, .. } => PanelAction::PreviewJump { panel, anchor },
         other => other,
     }
 }
 
 /// A tooltip naming what a control does and, when it has one, its chord.
-fn hint(ctx: &Context, what: &str, id: &str) -> String {
+pub(crate) fn hint(ctx: &Context, what: &str, id: &str) -> String {
     match crate::keymap::label(ctx, id) {
         chord if chord.is_empty() => what.to_owned(),
         chord => format!("{what} ({chord})"),
     }
+}
+
+/// A scroll offset as history keeps it: whole points, never negative.
+fn scroll_points(offset: f32) -> u32 {
+    // Offsets are small and non-negative; the cast only drops the fraction.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let points = offset.max(0.0).round() as u32;
+    points
 }
 
 fn now_ms() -> i64 {
@@ -979,8 +990,12 @@ impl ThrongApp {
                 | PanelAction::KeepMine(p)
                 | PanelAction::RetryOpen(p)
                 | PanelAction::GotoLine(p)
-                | PanelAction::PickLanguage(p) => Some(*p),
-                PanelAction::PreviewLink { panel, .. } => Some(*panel),
+                | PanelAction::PickLanguage(p)
+                | PanelAction::PreviewBack(p)
+                | PanelAction::PreviewForward(p) => Some(*p),
+                PanelAction::PreviewLink { panel, .. } | PanelAction::PreviewJump { panel, .. } => {
+                    Some(*panel)
+                }
                 _ => None,
             };
             let mirror = target.and_then(|p| {
@@ -1676,6 +1691,12 @@ impl ThrongApp {
                 PanelAction::PreviewLink { panel, href, action } => {
                     self.preview_link(ctx, pid, panel, &href, action);
                 }
+                PanelAction::PreviewBack(panel) => self.preview_step(pid, panel, false),
+                PanelAction::PreviewForward(panel) => self.preview_step(pid, panel, true),
+                PanelAction::PreviewJump { panel, anchor } => {
+                    let Some(path) = self.previews.get(&panel).map(|s| s.path.clone()) else { continue };
+                    self.preview_open(pid, panel, path, Some(anchor));
+                }
                 PanelAction::UpdateSearch(panel, config) => {
                     if let Some(ws) = self.workspaces.get_mut(&pid) {
                         ws.layout.set_kind(panel, PanelKind::Search(config));
@@ -1879,7 +1900,7 @@ impl ThrongApp {
                     |p| matches!(&p.kind, PanelKind::Editor(EditorPanelConfig { path: Some(e) }) if same(e)),
                 )
                 .map(|p| p.id);
-            let kind = PanelKind::Preview(PreviewPanelConfig { path });
+            let kind = PanelKind::Preview(PreviewPanelConfig::new(path));
             match editor {
                 Some(editor) => ws.layout.add_panel(pid, Some(editor), Placement::Right, kind),
                 None => ws.layout.add_panel(pid, anchor, Placement::Stack, kind),
@@ -1939,14 +1960,55 @@ impl ThrongApp {
             let _ = throng_platform::fs::reveal(&resolved);
         } else if crate::preview::previewable(&resolved) {
             // The same preview shows the other file from now on.
-            if let Some(ws) = self.workspaces.get_mut(&pid) {
-                ws.layout.set_kind(panel, PanelKind::Preview(PreviewPanelConfig { path: resolved.clone() }));
-                ws.mark_dirty();
-            }
-            self.previews.insert(panel, crate::preview::PreviewState::new(resolved, anchor));
+            self.preview_open(pid, panel, resolved, anchor);
         } else {
             self.open_in_editor(pid, resolved);
         }
+    }
+
+    /// A preview shows `path` next (at `anchor`, a heading), as a new place in its history.
+    fn preview_open(&mut self, pid: ProjectId, panel: PanelId, path: PathBuf, anchor: Option<String>) {
+        let cap = self.settings.navigation_history_size();
+        let Some(state) = self.previews.get_mut(&panel) else { return };
+        let Some(ws) = self.workspaces.get_mut(&pid) else { return };
+        let Some(PanelKind::Preview(config)) = ws.layout.panels.get(&panel).map(|p| p.kind.clone()) else {
+            return;
+        };
+        let mut config = config;
+        config.open(path.clone(), scroll_points(state.scroll), cap);
+        if state.path == path {
+            state.anchor = anchor;
+        } else {
+            let has_keys = state.has_keys;
+            *state = crate::preview::PreviewState::new(path, anchor);
+            state.has_keys = has_keys;
+        }
+        ws.layout.set_kind(panel, PanelKind::Preview(config));
+        ws.mark_dirty();
+    }
+
+    /// Back (or forward) in a preview's history, to where the reader was.
+    fn preview_step(&mut self, pid: ProjectId, panel: PanelId, forward: bool) {
+        let cap = self.settings.navigation_history_size();
+        let Some(state) = self.previews.get_mut(&panel) else { return };
+        let Some(ws) = self.workspaces.get_mut(&pid) else { return };
+        let Some(PanelKind::Preview(mut config)) = ws.layout.panels.get(&panel).map(|p| p.kind.clone())
+        else {
+            return;
+        };
+        config.cap(cap);
+        let scroll = scroll_points(state.scroll);
+        let Some(entry) = (if forward { config.forward(scroll) } else { config.back(scroll) }) else {
+            return;
+        };
+        if state.path != entry.path {
+            let has_keys = state.has_keys;
+            *state = crate::preview::PreviewState::new(entry.path.clone(), None);
+            state.has_keys = has_keys;
+        }
+        state.restore = Some(entry.scroll as f32);
+        ws.layout.set_kind(panel, PanelKind::Preview(config));
+        ws.mark_dirty();
     }
 
     /// Open `path` with the caret at a 1-based line and column (clamped to the text).
@@ -2536,7 +2598,14 @@ impl ThrongApp {
             for panel in ws.layout.panels.values_mut() {
                 changed |= match &mut panel.kind {
                     PanelKind::Editor(EditorPanelConfig { path: Some(p) }) => rebase(p),
-                    PanelKind::Preview(PreviewPanelConfig { path }) => rebase(path),
+                    PanelKind::Preview(config) => {
+                        let before = config.clone();
+                        config.rebase(|p| {
+                            let mut p = p.to_path_buf();
+                            rebase(&mut p).then_some(p)
+                        });
+                        *config != before
+                    }
                     _ => false,
                 };
             }

@@ -58,7 +58,7 @@ fn main() -> anyhow::Result<()> {
             project.id,
             Some(editor),
             Placement::Right,
-            PanelKind::Preview(PreviewPanelConfig { path }),
+            PanelKind::Preview(PreviewPanelConfig::new(path)),
         );
     }
     layout.rename_panel(first, "build");
