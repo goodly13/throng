@@ -115,13 +115,13 @@ impl AppDirs {
         for byte in self.runtime.to_string_lossy().bytes() {
             hash = (hash ^ u32::from(byte)).wrapping_mul(16_777_619);
         }
-        format!("throng-{}-{}-{hash:08x}", self.instance, sanitize(&user))
+        format!("throng-{}-{}{}-{hash:08x}", self.instance, sanitize(&user), level())
     }
 
     /// The lock held for the lifetime of the daemon.
     #[must_use]
     pub fn daemon_lock(&self) -> PathBuf {
-        self.runtime.join("daemon.lock")
+        self.runtime.join(format!("daemon{}.lock", level()))
     }
 
     /// The lock held for the lifetime of the UI (one UI per instance).
@@ -129,6 +129,15 @@ impl AppDirs {
     pub fn ui_lock(&self) -> PathBuf {
         self.runtime.join("ui.lock")
     }
+}
+
+/// An elevated Windows process gets a daemon of its own, beside the one its user's normal processes
+/// share: a normal program must never drive terminals that run as administrator (Windows would not
+/// let it open an elevated daemon's pipe anyway), and an elevated throng needs a daemon that can
+/// start them.
+fn level() -> &'static str {
+    static ELEVATED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if cfg!(windows) && *ELEVATED.get_or_init(crate::process::is_elevated) { "-admin" } else { "" }
 }
 
 fn sanitize(text: &str) -> String {

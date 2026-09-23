@@ -3966,12 +3966,15 @@ dependencies = [
  "libc",
  "parking_lot",
  "portable-pty",
+ "serde",
+ "serde_bytes",
  "tempfile",
  "thiserror 2.0.20",
  "throng-core",
  "throng-platform",
  "throng-protocol",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

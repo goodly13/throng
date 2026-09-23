@@ -436,6 +436,74 @@ impl ProcessTree {
     }
 }
 
+/// Whether this process can start others without its administrator rights. Only Windows can: an
+/// elevated process there hands a child a normal user's rights instead. (A Unix process's rights
+/// are its user's, and there is nothing to drop.)
+#[must_use]
+pub fn can_deelevate() -> bool {
+    cfg!(windows) && is_elevated()
+}
+
+/// A process started by [`spawn_deelevated`], with its standard input and output piped to the
+/// caller.
+pub struct Piped {
+    pub pid: u32,
+    pub stdin: std::fs::File,
+    pub stdout: std::fs::File,
+}
+
+/// Start `program` with `args` without this process's administrator rights: on Windows, with a
+/// normal user's token at medium integrity (what a program started from Explorer gets), and with
+/// no console. Its standard error goes nowhere. Fails where [`can_deelevate`] is false.
+pub fn spawn_deelevated(program: &Path, args: &[&str]) -> io::Result<Piped> {
+    #[cfg(windows)]
+    {
+        let mut line = quote_windows_arg(&program.to_string_lossy());
+        for arg in args {
+            line.push(' ');
+            line.push_str(&quote_windows_arg(arg));
+        }
+        let (pid, stdin, stdout) = win::spawn_deelevated(&line)?;
+        Ok(Piped { pid, stdin: stdin.into(), stdout: stdout.into() })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (program, args);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "only Windows can start a process without its rights"))
+    }
+}
+
+/// One argument, quoted for a Windows command line so that the C runtime splits it back out
+/// unchanged.
+#[cfg(any(windows, test))]
+fn quote_windows_arg(arg: &str) -> String {
+    if !arg.is_empty() && !arg.contains([' ', '\t', '\n', '\x0b', '"']) {
+        return arg.to_owned();
+    }
+    let mut out = String::from('"');
+    let mut backslashes = 0;
+    for c in arg.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                // Backslashes before a quote are escapes: double them, then escape the quote.
+                out.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+                out.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                out.extend(std::iter::repeat_n('\\', backslashes));
+                out.push(c);
+                backslashes = 0;
+            }
+        }
+    }
+    // Before the closing quote they would escape it, so they are doubled too.
+    out.extend(std::iter::repeat_n('\\', backslashes * 2));
+    out.push('"');
+    out
+}
+
 /// The current user's name, for display only.
 #[must_use]
 pub fn user_name() -> String {
@@ -456,7 +524,16 @@ mod win {
         CloseHandle, ERROR_ACCESS_DENIED, FILETIME, GetLastError, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE,
         UNICODE_STRING,
     };
-    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
+    use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, LocalFree, SetHandleInformation};
+    use windows_sys::Win32::Security::AppLocker::{
+        SAFER_LEVEL_OPEN, SAFER_LEVELID_NORMALUSER, SAFER_SCOPEID_USER, SaferCloseLevel,
+        SaferComputeTokenFromLevel, SaferCreateLevel,
+    };
+    use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+    use windows_sys::Win32::Security::{
+        GetLengthSid, GetTokenInformation, PSID, SAFER_LEVEL_HANDLE, SID_AND_ATTRIBUTES, SetTokenInformation,
+        TOKEN_ELEVATION, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TokenElevation, TokenIntegrityLevel,
+    };
     use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -465,6 +542,13 @@ mod win {
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
         TerminateJobObject,
+    };
+    use windows_sys::Win32::System::Pipes::CreatePipe;
+    use windows_sys::Win32::System::SystemServices::SE_GROUP_INTEGRITY;
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessAsUserW, DETACHED_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW, UpdateProcThreadAttribute,
     };
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenProcessToken,
@@ -482,6 +566,17 @@ mod win {
             } else {
                 Ok(Self(handle))
             }
+        }
+    }
+
+    impl Owned {
+        /// Hand the handle on to std, which closes it from then on.
+        fn into_std(self) -> std::os::windows::io::OwnedHandle {
+            use std::os::windows::io::FromRawHandle;
+            let handle = self.0;
+            std::mem::forget(self);
+            // SAFETY: the handle is open and owned by this value alone, which no longer closes it.
+            unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(handle) }
         }
     }
 
@@ -728,6 +823,175 @@ mod win {
         Some(out)
     }
 
+    /// De-elevated spawns make their pipe ends inheritable for a moment; one at a time, so that no
+    /// child is ever handed another's pipe.
+    static SPAWNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Start `command_line` with a normal user's token at medium integrity and no console, its
+    /// standard input and output piped. Returns its pid, then the ends for writing its input and
+    /// reading its output.
+    pub fn spawn_deelevated(
+        command_line: &str,
+    ) -> io::Result<(u32, std::os::windows::io::OwnedHandle, std::os::windows::io::OwnedHandle)> {
+        let token = normal_user_token()?;
+        let _one_at_a_time = SPAWNING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (child_in, our_in) = pipe()?;
+        let (our_out, child_out) = pipe()?;
+        for end in [&child_in, &child_out] {
+            // SAFETY: the handle is open; this only sets its inherit flag.
+            if unsafe { SetHandleInformation(end.0, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+
+        // Only the two pipe ends are inherited, whatever else this process holds inheritable.
+        let mut size = 0usize;
+        // SAFETY: a null list asks only for the size one needs; that call fails by design.
+        unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &raw mut size) };
+        let mut storage = vec![0usize; size.div_ceil(std::mem::size_of::<usize>()).max(1)];
+        let list: LPPROC_THREAD_ATTRIBUTE_LIST = storage.as_mut_ptr().cast();
+        // SAFETY: `storage` holds at least `size` bytes, aligned for the pointers the list holds.
+        if unsafe { InitializeProcThreadAttributeList(list, 1, 0, &raw mut size) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let list = AttributeList(list);
+        let inherited = [child_in.0, child_out.0];
+        // SAFETY: the list was made for one attribute, and `inherited` outlives every use of it
+        // (the process is created below, before either is dropped).
+        let updated = unsafe {
+            UpdateProcThreadAttribute(
+                list.0,
+                0,
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                inherited.as_ptr().cast(),
+                std::mem::size_of_val(&inherited),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            )
+        };
+        if updated == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut startup = STARTUPINFOEXW::default();
+        startup.StartupInfo.cb =
+            u32::try_from(std::mem::size_of::<STARTUPINFOEXW>()).map_err(io::Error::other)?;
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdInput = child_in.0;
+        startup.StartupInfo.hStdOutput = child_out.0;
+        startup.lpAttributeList = list.0;
+        let mut line: Vec<u16> = command_line.encode_utf16().chain([0]).collect();
+        let mut process = PROCESS_INFORMATION::default();
+        // SAFETY: the token is a primary token restricted from this process's own, which needs no
+        // extra privilege to assign; `line` is a writable NUL-terminated string, as the call
+        // requires; `startup` is a STARTUPINFOEXW whose size and attribute list are set (with
+        // EXTENDED_STARTUPINFO_PRESENT); the environment and directory are this process's (null).
+        let created = unsafe {
+            CreateProcessAsUserW(
+                token.0,
+                std::ptr::null(),
+                line.as_mut_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+                EXTENDED_STARTUPINFO_PRESENT | DETACHED_PROCESS,
+                std::ptr::null(),
+                std::ptr::null(),
+                (&raw const startup).cast(),
+                &raw mut process,
+            )
+        };
+        if created == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        drop(Owned(process.hThread));
+        drop(Owned(process.hProcess));
+        drop(list);
+        drop(storage);
+        Ok((process.dwProcessId, our_in.into_std(), our_out.into_std()))
+    }
+
+    /// An initialised attribute list, deleted on drop (before its storage is freed).
+    struct AttributeList(LPPROC_THREAD_ATTRIBUTE_LIST);
+
+    impl Drop for AttributeList {
+        fn drop(&mut self) {
+            // SAFETY: the list was initialised and is deleted exactly once, here.
+            unsafe { DeleteProcThreadAttributeList(self.0) };
+        }
+    }
+
+    /// An anonymous pipe: its read end, then its write end. Neither is inheritable.
+    fn pipe() -> io::Result<(Owned, Owned)> {
+        let mut read: HANDLE = std::ptr::null_mut();
+        let mut write: HANDLE = std::ptr::null_mut();
+        // SAFETY: both are valid places for the new handles; null attributes make them
+        // non-inheritable; zero asks for the default buffer size.
+        if unsafe { CreatePipe(&raw mut read, &raw mut write, std::ptr::null(), 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((Owned::new(read)?, Owned::new(write)?))
+    }
+
+    /// This process's token, restricted to a normal user's rights (Safer's normal-user level:
+    /// administrator groups deny-only, administrator privileges gone) at medium integrity.
+    fn normal_user_token() -> io::Result<Owned> {
+        let mut level: SAFER_LEVEL_HANDLE = std::ptr::null_mut();
+        // SAFETY: `level` is a valid place for the opened level; the reserved argument is null.
+        let opened = unsafe {
+            SaferCreateLevel(
+                SAFER_SCOPEID_USER,
+                SAFER_LEVELID_NORMALUSER,
+                SAFER_LEVEL_OPEN,
+                &raw mut level,
+                std::ptr::null(),
+            )
+        };
+        if opened == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut token: HANDLE = std::ptr::null_mut();
+        // SAFETY: the level is open; a null input token means this process's own; the output is
+        // a valid place for the new token; the reserved argument is null.
+        let computed = unsafe {
+            SaferComputeTokenFromLevel(level, std::ptr::null_mut(), &raw mut token, 0, std::ptr::null_mut())
+        };
+        let error = io::Error::last_os_error();
+        // SAFETY: the level was opened above, and is closed once, here.
+        unsafe { SaferCloseLevel(level) };
+        if computed == 0 {
+            return Err(error);
+        }
+        let token = Owned::new(token)?;
+
+        // Safer keeps this process's own (high) integrity level; a normal program runs at medium.
+        let medium: Vec<u16> = "S-1-16-8192".encode_utf16().chain([0]).collect();
+        let mut sid: PSID = std::ptr::null_mut();
+        // SAFETY: `medium` is NUL-terminated; `sid` receives a SID allocated with LocalAlloc,
+        // freed below.
+        if unsafe { ConvertStringSidToSidW(medium.as_ptr(), &raw mut sid) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let label = TOKEN_MANDATORY_LABEL {
+            Label: SID_AND_ATTRIBUTES { Sid: sid, Attributes: SE_GROUP_INTEGRITY.cast_unsigned() },
+        };
+        // SAFETY: `sid` is a valid SID until it is freed below.
+        let sid_len = unsafe { GetLengthSid(sid) };
+        let size =
+            u32::try_from(std::mem::size_of::<TOKEN_MANDATORY_LABEL>()).map_err(io::Error::other)? + sid_len;
+        // SAFETY: Safer opens the new token with full access; `label` is the structure this class
+        // reads, followed in memory by nothing it needs (the SID is reached through its pointer).
+        let set =
+            unsafe { SetTokenInformation(token.0, TokenIntegrityLevel, (&raw const label).cast(), size) };
+        let error = io::Error::last_os_error();
+        // SAFETY: allocated by ConvertStringSidToSidW with LocalAlloc, and freed once, here.
+        unsafe { LocalFree(sid) };
+        if set == 0 {
+            return Err(error);
+        }
+        Ok(token)
+    }
+
     /// A job object that kills its processes when closed.
     pub struct Job(Owned);
 
@@ -881,6 +1145,47 @@ mod tests {
         tree.terminate();
         shell.wait().unwrap();
         assert_eq!(ProcessTable::snapshot().running_command(pid), None, "a gone shell runs nothing");
+    }
+
+    #[test]
+    fn windows_arguments_are_quoted_as_the_c_runtime_splits_them() {
+        assert_eq!(quote_windows_arg("pty-host"), "pty-host");
+        assert_eq!(quote_windows_arg(""), r#""""#);
+        assert_eq!(
+            quote_windows_arg(r"C:\Program Files\throng\throng.exe"),
+            r#""C:\Program Files\throng\throng.exe""#
+        );
+        assert_eq!(quote_windows_arg(r#"say "hi""#), r#""say \"hi\"""#);
+        assert_eq!(quote_windows_arg(r"C:\a dir\"), r#""C:\a dir\\""#);
+        assert_eq!(quote_windows_arg(r#"a\"b"#), r#""a\\\"b""#);
+        assert_eq!(quote_windows_arg(r"a\\b"), r"a\\b", "backslashes not before a quote are literal");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_deelevated_process_runs_at_medium_integrity() {
+        use std::io::Read;
+        if !can_deelevate() {
+            eprintln!("skipped: this process is not elevated, so there is nothing to drop");
+            return;
+        }
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        let cmd = Path::new(&root).join(r"System32\cmd.exe");
+        let piped = spawn_deelevated(&cmd, &["/d", "/c", "whoami", "/groups"]).unwrap();
+        drop(piped.stdin);
+        let mut out = String::new();
+        let mut stdout = piped.stdout;
+        stdout.read_to_string(&mut out).unwrap();
+        assert!(out.contains("S-1-16-8192"), "medium integrity:\n{out}");
+        assert!(!out.contains("S-1-16-12288"), "not high integrity:\n{out}");
+    }
+
+    #[test]
+    fn only_windows_starts_processes_without_its_rights() {
+        if cfg!(not(windows)) {
+            assert!(!can_deelevate());
+            assert!(spawn_deelevated(Path::new("/bin/true"), &[]).is_err());
+        }
     }
 
     #[cfg(windows)]

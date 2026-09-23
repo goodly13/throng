@@ -17,6 +17,29 @@ use throng_editor::highlight::Highlighter;
 use crate::links::LinkAction;
 use crate::markdown::{self, Block, Document, Inline, Item};
 
+/// A `file://` address for `path` that egui's file loader reads back as `path`.
+#[must_use]
+pub fn file_uri(path: &Path) -> String {
+    let text = path.display().to_string();
+    if cfg!(windows) { windows_file_uri(&text) } else { format!("file://{text}") }
+}
+
+/// On Windows the loader reads `file:///C:\…` as a local path and `file://server\share\…` as a
+/// network one, so `file://C:\…` would name a share called `C:`. A verbatim `\\?\` prefix (as
+/// `canonicalize` writes) is dropped.
+fn windows_file_uri(path: &str) -> String {
+    if let Some(share) = path.strip_prefix(r"\\?\UNC\") {
+        return format!("file://{share}");
+    }
+    if let Some(local) = path.strip_prefix(r"\\?\") {
+        return format!("file:///{local}");
+    }
+    if let Some(share) = path.strip_prefix(r"\\") {
+        return format!("file://{share}");
+    }
+    format!("file:///{path}")
+}
+
 /// Whether a file has a preview: the Markdown provider accepts `.md` and `.markdown`.
 #[must_use]
 pub fn previewable(path: &Path) -> bool {
@@ -230,7 +253,7 @@ impl ImagePolicy {
         let root = std::fs::canonicalize(self.root.as_ref()?).ok()?;
         let meta = std::fs::metadata(&path).ok()?;
         (self.rules.is_within(&root, &path) && meta.is_file() && meta.len() <= MAX_IMAGE_BYTES)
-            .then(|| format!("file://{}", path.display()))
+            .then(|| file_uri(&path))
     }
 }
 
@@ -656,6 +679,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn windows_paths_become_the_file_addresses_egui_reads_back() {
+        assert_eq!(windows_file_uri(r"\\?\C:\p\a b.png"), r"file:///C:\p\a b.png");
+        assert_eq!(windows_file_uri(r"C:\p\a.png"), r"file:///C:\p\a.png");
+        assert_eq!(windows_file_uri(r"\\?\UNC\srv\share\a.png"), r"file://srv\share\a.png");
+        assert_eq!(windows_file_uri(r"\\srv\share\a.png"), r"file://srv\share\a.png");
+    }
+
+    #[test]
     fn lines_and_offsets_map_through_the_blocks_both_ways() {
         let lines = [0, 4, 10];
         let tops = [0.0, 100.0, 400.0];
@@ -700,7 +731,7 @@ mod tests {
         let docs = root.join("docs");
         let mut policy =
             ImagePolicy { root: Some(root.clone()), rules: throng_platform::path_rules(), remote: true };
-        let local = |p: &Path| format!("file://{}", std::fs::canonicalize(p).unwrap().display());
+        let local = |p: &Path| file_uri(&std::fs::canonicalize(p).unwrap());
         assert_eq!(policy.address("img/a b.png", Some(&docs)), Some(local(&root.join("docs/img/a b.png"))));
         assert_eq!(policy.address("img/a%20b.png", Some(&docs)), Some(local(&root.join("docs/img/a b.png"))));
         assert_eq!(policy.address("../../outside.png", Some(&docs)), None, "outside the project");

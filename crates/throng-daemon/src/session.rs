@@ -2,16 +2,19 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{ChildKiller, MasterPty, PtySize, native_pty_system};
 use throng_core::ids::{ProjectId, TerminalId};
 use throng_core::terminal::{ExitStatus, is_private_env_var};
+use throng_platform::process::ProcessTree;
 use throng_protocol::{ServerMsg, Snapshot, SpawnSpec, TerminalInfo};
 
+use crate::pty_host::{self, Start};
 use crate::registry::{ClientId, Registry};
 
 /// Retained output per session.
@@ -23,6 +26,8 @@ pub struct Session {
     pub project: ProjectId,
     pub label: String,
     pub pid: Option<u32>,
+    /// The shell runs as administrator (Windows).
+    pub elevated: bool,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
@@ -30,7 +35,7 @@ pub struct Session {
     /// dropped, so a command cannot outlive its terminal or the daemon). Unix ends a session's
     /// processes through its process groups instead, and never reads this.
     #[cfg_attr(unix, allow(dead_code))]
-    tree: Option<throng_platform::process::ProcessTree>,
+    tree: Option<ProcessTree>,
     state: Mutex<State>,
 }
 
@@ -119,11 +124,32 @@ pub enum SpawnError {
     Failed { program: String, reason: String },
 }
 
+/// How a session's shell starts.
+#[derive(Clone, Copy, Debug)]
+pub enum Launch<'a> {
+    /// On a PTY of the daemon's own, with the daemon's rights.
+    Native,
+    /// In a PTY host (`<exe> pty-host`) started without the daemon's administrator rights.
+    Deelevated { exe: &'a Path },
+}
+
+/// Hold `pid` and everything it starts from now on together, so none of it outlives the session.
+fn hold(pid: u32) -> Option<ProcessTree> {
+    match ProcessTree::adopt(pid) {
+        Ok(tree) => Some(tree),
+        Err(e) => {
+            tracing::warn!(pid, error = %e, "could not hold the shell's processes together");
+            None
+        }
+    }
+}
+
 impl Session {
     /// Start a shell. Output flows to attached views through `registry`; `on_exit` runs once the
     /// shell has exited and its output has drained.
     pub fn spawn(
         spec: &SpawnSpec,
+        launch: Launch<'_>,
         tail_bytes: usize,
         registry: Arc<Registry>,
         on_exit: impl FnOnce(TerminalId) + Send + 'static,
@@ -133,44 +159,57 @@ impl Session {
         }
         let failed =
             |reason: String| SpawnError::Failed { program: spec.program.display().to_string(), reason };
-        let size =
-            PtySize { rows: spec.rows.max(1), cols: spec.cols.max(1), pixel_width: 0, pixel_height: 0 };
-        let pair = native_pty_system().openpty(size).map_err(|e| failed(e.to_string()))?;
+        // Later entries win, so throng's own terminal variables override the UI's.
+        let mut env: Vec<(String, String)> =
+            spec.env.iter().filter(|(key, _)| !is_private_env_var(key)).cloned().collect();
+        env.extend([
+            ("TERM".to_owned(), "xterm-256color".to_owned()),
+            ("COLORTERM".to_owned(), "truecolor".to_owned()),
+            ("TERM_PROGRAM".to_owned(), "throng".to_owned()),
+            ("TERM_PROGRAM_VERSION".to_owned(), env!("CARGO_PKG_VERSION").to_owned()),
+        ]);
+        let start = Start {
+            program: spec.program.clone(),
+            args: spec.args.clone(),
+            cwd: spec.cwd.clone(),
+            env,
+            cols: spec.cols,
+            rows: spec.rows,
+        };
+        let size = start.size();
 
-        let mut command = CommandBuilder::new(&spec.program);
-        command.args(&spec.args);
-        command.cwd(&spec.cwd);
-        command.env_clear();
-        for (key, value) in &spec.env {
-            if !is_private_env_var(key) {
-                command.env(key, value);
+        let (master, mut child, tree, elevated) = match launch {
+            Launch::Native => {
+                let pair = native_pty_system().openpty(size).map_err(|e| failed(e.to_string()))?;
+                let child = pair.slave.spawn_command(start.command()).map_err(|e| failed(e.to_string()))?;
+                drop(pair.slave);
+                let tree = child.process_id().and_then(hold);
+                // Marked only where running as administrator is a choice (Windows): a Unix
+                // terminal has its user's rights, root's included, like any other program.
+                (pair.master, child, tree, cfg!(windows) && throng_platform::process::is_elevated())
             }
-        }
-        command.env("TERM", "xterm-256color");
-        command.env("COLORTERM", "truecolor");
-        command.env("TERM_PROGRAM", "throng");
-        command.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
-
-        let mut child = pair.slave.spawn_command(command).map_err(|e| failed(e.to_string()))?;
-        drop(pair.slave);
+            Launch::Deelevated { exe } => {
+                let host = throng_platform::process::spawn_deelevated(exe, &["pty-host"]).map_err(|e| {
+                    failed(format!("it could not be started without administrator rights ({e})"))
+                })?;
+                // Held before the shell exists, so the shell and all it starts are held with it.
+                let tree = hold(host.pid);
+                let hosted = pty_host::connect(host.stdin, host.stdout, &start).map_err(failed)?;
+                (hosted.master, hosted.child, tree, false)
+            }
+        };
         let pid = child.process_id();
-        let tree = pid.and_then(|pid| match throng_platform::process::ProcessTree::adopt(pid) {
-            Ok(tree) => Some(tree),
-            Err(e) => {
-                tracing::warn!(pid, error = %e, "could not hold the shell's processes together");
-                None
-            }
-        });
         let killer = child.clone_killer();
-        let reader = pair.master.try_clone_reader().map_err(|e| failed(e.to_string()))?;
-        let writer = pair.master.take_writer().map_err(|e| failed(e.to_string()))?;
+        let reader = master.try_clone_reader().map_err(|e| failed(e.to_string()))?;
+        let writer = master.take_writer().map_err(|e| failed(e.to_string()))?;
 
         let session = Arc::new(Self {
             id: spec.terminal,
             project: spec.project,
             label: spec.label.clone(),
             pid,
-            master: Mutex::new(pair.master),
+            elevated,
+            master: Mutex::new(master),
             writer: Mutex::new(writer),
             killer: Mutex::new(killer),
             tree,
@@ -278,6 +317,7 @@ impl Session {
             end_offset: state.end_offset,
             exited: state.exited,
             alt_screen: state.alt.active,
+            elevated: self.elevated,
         };
         if state.exited.is_none() {
             state.views.insert(client, (cols.max(1), rows.max(1)));
@@ -437,6 +477,7 @@ impl Session {
             busy: exited.is_none() && self.is_busy(),
             exited,
             views,
+            elevated: self.elevated,
         }
     }
 }

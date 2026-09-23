@@ -16,6 +16,8 @@ throng — project-first terminal & agent workspace
 USAGE:
     throng [FOLDER]      Open throng (and the project for FOLDER, creating it if needed)
     throng daemon        Run the terminal daemon (started automatically; not needed by hand)
+    throng pty-host      Host one terminal for the daemon, over standard input and output
+                         (started by an elevated daemon; not needed by hand)
     throng --version     Print the version
 ";
 
@@ -23,6 +25,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("daemon") => run_daemon(),
+        Some("pty-host") => ExitCode::from(u8::try_from(throng_daemon::pty_host::run()).unwrap_or(1)),
         Some("--version" | "-V") => {
             println!("throng {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -68,7 +71,10 @@ fn run_daemon() -> ExitCode {
         Err(code) => return code,
     };
     logging::init(&dirs.logs, "daemon.log");
-    match throng_daemon::run(throng_daemon::DaemonConfig::new(dirs)) {
+    let mut config = throng_daemon::DaemonConfig::new(dirs);
+    // An elevated daemon starts terminals without its rights through a PTY host: this program.
+    config.pty_host = std::env::current_exe().ok();
+    match throng_daemon::run(config) {
         Ok(()) | Err(throng_daemon::RunError::AlreadyRunning) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!(error = %e, "daemon failed");

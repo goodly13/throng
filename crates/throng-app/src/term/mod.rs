@@ -126,6 +126,8 @@ pub struct TerminalView {
     pub(crate) process_cwd: Option<PathBuf>,
     /// The shell's pid while it runs, as the daemon last reported it.
     pub(crate) shell_pid: Option<u32>,
+    /// The shell runs as administrator (Windows), as the daemon reported when it attached.
+    pub elevated: bool,
     /// The last directory the shell reported itself.
     reported: Option<PathBuf>,
     /// The colours it is drawn with, for answering colour queries.
@@ -168,6 +170,7 @@ impl TerminalView {
             cwd: None,
             process_cwd: None,
             shell_pid: None,
+            elevated: false,
             reported: None,
             osc7: osc7::Osc7::default(),
             palette: None,
@@ -192,6 +195,7 @@ impl TerminalView {
         self.scan_reports(&snapshot.tail);
         while self.events.try_recv().is_ok() {}
         self.seen_until = snapshot.end_offset;
+        self.elevated = snapshot.elevated;
         self.status = match snapshot.exited {
             Some(status) => Status::Exited(status),
             None => Status::Running,
@@ -345,6 +349,7 @@ mod tests {
             end_offset: end,
             exited: None,
             alt_screen: false,
+            elevated: false,
         }
     }
 

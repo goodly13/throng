@@ -3,6 +3,7 @@
 
 pub mod client;
 pub mod endpoint;
+pub mod pty_host;
 mod registry;
 pub mod server;
 mod session;

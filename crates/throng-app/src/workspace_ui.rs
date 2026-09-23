@@ -155,6 +155,8 @@ pub struct Picker {
     pub last_directory: Option<PathBuf>,
     /// Whether a command running when it ends becomes its startup command.
     pub remember_command: bool,
+    /// Keep throng's administrator rights (when it has them).
+    pub run_as_admin: bool,
     pub open_path: String,
     pub error: Option<String>,
 }
@@ -171,9 +173,34 @@ impl Picker {
             remember_directory: config.remember_directory,
             last_directory: config.last_directory.clone(),
             remember_command: config.remember_command,
+            run_as_admin: config.run_as_admin,
             ..Self::default()
         }
     }
+}
+
+/// "Run as administrator": a choice only while throng itself runs as administrator. Otherwise it is
+/// shown off and disabled, saying why, while the panel keeps its choice for an elevated run.
+fn admin_checkbox(ui: &mut Ui, run_as_admin: &mut bool, elevated: bool) {
+    if elevated {
+        ui.checkbox(run_as_admin, "Run as administrator").on_hover_text(
+            "Keep throng's administrator rights. Otherwise this terminal runs with a normal user's rights.",
+        );
+    } else {
+        let mut off = false;
+        ui.add_enabled(false, egui::Checkbox::new(&mut off, "Run as administrator"))
+            .on_disabled_hover_text("Start throng as administrator to run a terminal as administrator.");
+    }
+}
+
+/// The mark on an elevated terminal's tab and on an elevated throng's status bar.
+pub const ADMIN_MARK: &str = "ADMIN";
+
+/// [`ADMIN_MARK`] as drawn: red, on a faint red ground.
+#[must_use]
+pub fn admin_mark() -> RichText {
+    let red = Color32::from_rgb(0xe5, 0x53, 0x4b);
+    RichText::new(ADMIN_MARK).small().strong().color(red).background_color(red.gamma_multiply(0.18))
 }
 
 /// The panel the keyboard was last in (each panel's own strip reports on it).
@@ -269,6 +296,8 @@ fn mirror_ui(ui: &mut Ui, panel: PanelId, tab_title: &str, ctx: &mut PanelCtx<'_
 
 struct Viewer<'a, 'b> {
     ctx: &'b mut PanelCtx<'a>,
+    /// For tab titles made of parts.
+    style: std::sync::Arc<egui::Style>,
     panels: &'b BTreeMap<PanelId, Panel>,
     tab_title: String,
     add_requests: Vec<NodePath>,
@@ -299,7 +328,16 @@ impl TabViewer for Viewer<'_, '_> {
                 let view = self.ctx.hub.views.get(tab);
                 let failed = view.is_some_and(|v| matches!(v.status, Status::Exited(_) | Status::Failed(_)));
                 let bell = view.is_some_and(|v| v.bell);
-                if failed {
+                let admin = view.is_some_and(|v| v.elevated && v.status == Status::Running);
+                if admin {
+                    let mut job = egui::text::LayoutJob::default();
+                    let font = egui::FontSelection::Style(egui::TextStyle::Button);
+                    let title =
+                        if bell { format!("• {} ", panel.title) } else { format!("{} ", panel.title) };
+                    RichText::new(title).append_to(&mut job, &self.style, font.clone(), egui::Align::Center);
+                    admin_mark().append_to(&mut job, &self.style, font, egui::Align::Center);
+                    job.into()
+                } else if failed {
                     RichText::new(&panel.title).color(Color32::from_rgb(0xe5, 0x53, 0x4b)).into()
                 } else if bell {
                     format!("• {}", panel.title).into()
@@ -515,7 +553,13 @@ pub fn show(
             .unwrap_or_else(|| throng_core::workspace::SplitTree::Leaf { panels: vec![], active: 0 });
         to_dock(&root)
     });
-    let mut viewer = Viewer { ctx, panels: &layout.panels, tab_title, add_requests: Vec::new() };
+    let mut viewer = Viewer {
+        ctx,
+        style: ui.style().clone(),
+        panels: &layout.panels,
+        tab_title,
+        add_requests: Vec::new(),
+    };
     let mut style = egui_dock::Style::from_egui(ui.style().as_ref());
     style.tab_bar.fill_tab_bar = false;
     style.tab.tab_body.inner_margin = egui::Margin::ZERO;
@@ -685,6 +729,13 @@ fn picker_ui(ui: &mut Ui, panel: PanelId, ctx: &mut PanelCtx<'_>) {
                          startup command.",
                 );
                 ui.end_row();
+                // Only an elevated throng on Windows has rights to keep or drop; elsewhere a
+                // terminal has its user's.
+                if cfg!(windows) {
+                    ui.label("");
+                    admin_checkbox(ui, &mut picker.run_as_admin, ctx.hub.elevated);
+                    ui.end_row();
+                }
             });
             if ui.button("Start Terminal").clicked() {
                 let cwd = picker.cwd.trim();
@@ -704,6 +755,7 @@ fn picker_ui(ui: &mut Ui, panel: PanelId, ctx: &mut PanelCtx<'_>) {
                             last_directory: picker.last_directory.clone(),
                             remember_command: picker.remember_command,
                             running_command: None,
+                            run_as_admin: picker.run_as_admin,
                         };
                         ctx.actions.push(PanelAction::SetKind(panel, PanelKind::Terminal(config)));
                     }
