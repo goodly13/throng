@@ -131,6 +131,8 @@ pub struct Picker {
     pub remember_directory: Option<bool>,
     /// Where its last terminal was working, carried into the next one.
     pub last_directory: Option<PathBuf>,
+    /// Whether a command running when it ends becomes its startup command.
+    pub remember_command: bool,
     pub open_path: String,
     pub error: Option<String>,
 }
@@ -146,6 +148,7 @@ impl Picker {
             startup: config.startup_command.clone().unwrap_or_default(),
             remember_directory: config.remember_directory,
             last_directory: config.last_directory.clone(),
+            remember_command: config.remember_command,
             ..Self::default()
         }
     }
@@ -349,7 +352,9 @@ impl TabViewer for Viewer<'_, '_> {
         match kind {
             PanelKind::Terminal(_) => {
                 ui.separator();
-                if ui.button("Restart Terminal").clicked() {
+                let restart =
+                    if self.ctx.hub.is_dormant(panel) { "Reload Terminal" } else { "Restart Terminal" };
+                if ui.button(restart).clicked() {
                     self.ctx.actions.push(PanelAction::RestartTerminal(panel));
                     ui.close();
                 }
@@ -610,6 +615,12 @@ fn picker_ui(ui: &mut Ui, panel: PanelId, ctx: &mut PanelCtx<'_>) {
                     picker.remember_directory = Some(remember);
                 }
                 ui.end_row();
+                ui.label("");
+                ui.checkbox(&mut picker.remember_command, "Remember the running command").on_hover_text(
+                    "When this terminal ends with a command running, that command becomes its \
+                         startup command.",
+                );
+                ui.end_row();
             });
             if ui.button("Start Terminal").clicked() {
                 let cwd = picker.cwd.trim();
@@ -627,6 +638,8 @@ fn picker_ui(ui: &mut Ui, panel: PanelId, ctx: &mut PanelCtx<'_>) {
                             startup_command: if startup.is_empty() { None } else { Some(startup.to_owned()) },
                             remember_directory: picker.remember_directory,
                             last_directory: picker.last_directory.clone(),
+                            remember_command: picker.remember_command,
+                            running_command: None,
                         };
                         ctx.actions.push(PanelAction::SetKind(panel, PanelKind::Terminal(config)));
                     }
@@ -709,6 +722,7 @@ fn terminal_ui(
 ) {
     let cwd = config.cwd.clone();
     let shell_id = config.shell.clone();
+    let name = label.clone();
     let plan = SpawnPlan { project: owner.id, label, root: owner.root.clone(), config };
     let area = ui.max_rect();
     ctx.hub.prepare(session, plan);
@@ -750,6 +764,19 @@ fn terminal_ui(
                 ],
                 ctx.actions,
             );
+        }
+        Status::Dormant => {
+            // Not started, by choice (manual reload): the panel says what it is and how to start it.
+            ui.vertical_centered(|ui| {
+                ui.add_space(ui.available_height() / 3.0);
+                ui.label(RichText::new(format!("\"{name}\" is not running.")).strong());
+                ui.weak("Terminals start when you reload them (Preferences, Start terminals).");
+                ui.add_space(6.0);
+                if ui.button("Reload").clicked() {
+                    ctx.actions.push(PanelAction::RestartTerminal(panel));
+                }
+            });
+            return;
         }
         Status::Running => {}
     }

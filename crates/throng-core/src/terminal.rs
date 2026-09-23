@@ -29,6 +29,81 @@ pub struct TerminalPanelConfig {
     /// The directory it was last seen working in, kept while it remembers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_directory: Option<PathBuf>,
+    /// When it ends with a command running, that command becomes its startup command. Off unless
+    /// the user turns it on for this panel; it never touches directory memory.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remember_command: bool,
+    /// The command last seen running in it, kept while it remembers, so that an end nobody saw (a
+    /// crash, a restart) still captures it at the next cold start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_command: Option<String>,
+}
+
+impl TerminalPanelConfig {
+    /// What was seen running in it now (`None`: nothing). Kept only while it remembers commands;
+    /// returns whether anything changed.
+    pub fn observe(&mut self, running: Option<String>) -> bool {
+        let running = running.filter(|_| self.remember_command);
+        if self.running_command == running {
+            return false;
+        }
+        self.running_command = running;
+        true
+    }
+
+    /// It ended with what was last seen running in it: while it remembers, a command becomes its
+    /// startup command, and nothing running leaves the startup command as it was. Either way the
+    /// observation is spent. Returns whether anything changed.
+    pub fn capture(&mut self) -> bool {
+        match self.running_command.take() {
+            Some(command) if self.remember_command => {
+                self.startup_command = Some(command);
+                true
+            }
+            Some(_) => true,
+            None => false,
+        }
+    }
+}
+
+/// The longest command memory keeps.
+pub const MAX_REMEMBERED_COMMAND: usize = 2048;
+
+/// A direct child of a shell, as a process snapshot shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellChild {
+    pub pid: u32,
+    /// When it started, in any unit that orders the children of one shell. Clocks are coarse (a
+    /// Linux tick is 10 ms), so a tie goes to the higher pid, the later of two.
+    pub started: u64,
+    pub argv: Vec<String>,
+}
+
+/// What a shell is running, as a startup command: its most recently started direct child,
+/// skipping copies of the shell itself (a subshell, or a pipeline stage that has not run its
+/// program yet). Grandchildren are never candidates. `None` when nothing qualifies, or when the
+/// command could not safely be typed back: empty, a control character, or too long.
+#[must_use]
+pub fn running_command(shell_argv: &[String], children: &[ShellChild]) -> Option<String> {
+    let mut children: Vec<&ShellChild> = children.iter().collect();
+    children.sort_by_key(|c| std::cmp::Reverse((c.started, c.pid)));
+    let child = children.into_iter().find(|c| !c.argv.is_empty() && c.argv != shell_argv)?;
+    let command = child.argv.iter().map(|word| shell_quote(word)).collect::<Vec<_>>().join(" ");
+    (!command.trim().is_empty()
+        && command.chars().count() <= MAX_REMEMBERED_COMMAND
+        && !command.chars().any(char::is_control))
+    .then_some(command)
+}
+
+/// One word as a POSIX shell reads it back: bare when it holds nothing the shell would interpret,
+/// else single-quoted.
+fn shell_quote(word: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
+    if !word.is_empty() && word.chars().all(plain) {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
 }
 
 /// Where a terminal starts on a cold start: the directory it last
@@ -201,6 +276,66 @@ pub fn is_private_env_var(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn child(started: u64, argv: &[&str]) -> ShellChild {
+        let pid = u32::try_from(started).unwrap() + 100;
+        ShellChild { pid, started, argv: argv.iter().map(|s| (*s).to_owned()).collect() }
+    }
+
+    #[test]
+    fn the_running_command_is_the_newest_direct_child_that_is_not_the_shell_itself() {
+        let shell = ["bash".to_owned()];
+        assert_eq!(running_command(&shell, &[]), None, "nothing running");
+        let kids = [child(5, &["sleep", "100"]), child(9, &["make", "-j4"]), child(7, &["tail", "-f", "a"])];
+        assert_eq!(running_command(&shell, &kids).as_deref(), Some("make -j4"), "the newest");
+        let tied = [ShellChild { pid: 11, ..child(5, &["b"]) }, ShellChild { pid: 10, ..child(5, &["a"]) }];
+        assert_eq!(running_command(&shell, &tied).as_deref(), Some("b"), "a tie: the higher pid");
+        let forked = [child(3, &["npm", "run", "dev"]), child(4, &["bash"])];
+        assert_eq!(running_command(&shell, &forked).as_deref(), Some("npm run dev"), "not a subshell");
+        assert_eq!(
+            running_command(&shell, &[child(1, &["grep", "a b", "it's", "$HOME;x"])]).as_deref(),
+            Some(r#"grep 'a b' 'it'\''s' '$HOME;x'"#),
+            "quoted so the shell reads the same words back"
+        );
+        let long = "x".repeat(MAX_REMEMBERED_COMMAND + 1);
+        assert_eq!(running_command(&shell, &[child(1, &["echo", &long])]), None, "too long");
+        assert_eq!(running_command(&shell, &[child(1, &["printf", "a\nb"])]), None, "not one line");
+        assert_eq!(running_command(&shell, &[child(1, &[])]), None);
+    }
+
+    #[test]
+    fn memory_captures_a_running_command_and_leaves_the_startup_command_when_nothing_ran() {
+        let mut off = TerminalPanelConfig { startup_command: Some("old".into()), ..Default::default() };
+        assert!(!off.observe(Some("make".into())), "memory off: nothing is kept");
+        assert!(!off.capture());
+        assert_eq!(off.startup_command.as_deref(), Some("old"));
+
+        let mut on = TerminalPanelConfig {
+            startup_command: Some("old".into()),
+            remember_command: true,
+            ..Default::default()
+        };
+        assert!(on.observe(Some("make".into())));
+        assert!(!on.observe(Some("make".into())), "the same observation changes nothing");
+        assert!(on.capture());
+        assert_eq!(on.startup_command.as_deref(), Some("make"));
+        assert_eq!(on.running_command, None, "spent");
+
+        assert!(on.observe(Some("vim".into())));
+        assert!(on.observe(None), "the command finished before the end");
+        assert!(!on.capture());
+        assert_eq!(on.startup_command.as_deref(), Some("make"), "nothing running: unchanged");
+    }
+
+    #[test]
+    fn a_config_without_memory_reads_and_writes_as_before() {
+        let old: TerminalPanelConfig = serde_json::from_str(r#"{"shell":"bash","args":[]}"#).unwrap();
+        assert!(!old.remember_command && old.running_command.is_none());
+        let text = serde_json::to_string(&old).unwrap();
+        assert!(!text.contains("rememberCommand") && !text.contains("runningCommand"), "{text}");
+        let on = TerminalPanelConfig { remember_command: true, ..old };
+        assert!(serde_json::to_string(&on).unwrap().contains(r#""rememberCommand":true"#));
+    }
 
     #[test]
     fn a_terminal_starts_where_it_last_worked_while_that_is_a_folder_in_the_project() {

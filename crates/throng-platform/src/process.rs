@@ -85,6 +85,185 @@ pub fn working_directory(pid: u32) -> Option<PathBuf> {
     }
 }
 
+/// A process snapshot, taken once for every terminal that needs one: on Linux the parent and
+/// start of every process; on macOS children are asked for one shell at a time, which is as cheap.
+/// Windows has no reading yet: every shell there reports no children.
+#[derive(Debug, Default)]
+pub struct ProcessTable {
+    /// (pid, parent, start) of every process.
+    #[cfg(target_os = "linux")]
+    entries: Vec<(u32, u32, u64)>,
+}
+
+impl ProcessTable {
+    #[must_use]
+    pub fn snapshot() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            let entries = std::fs::read_dir("/proc")
+                .map(|dir| {
+                    dir.filter_map(Result::ok)
+                        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+                        .filter_map(|pid| {
+                            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+                            let (parent, started) = linux_stat(&stat)?;
+                            Some((pid, parent, started))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Self { entries }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Self::default()
+        }
+    }
+
+    /// The command `shell` is running, as a startup command (see
+    /// [`throng_core::terminal::running_command`]). `None` when nothing runs or it cannot be read.
+    #[must_use]
+    pub fn running_command(&self, shell: u32) -> Option<String> {
+        let shell_argv = command_line(shell)?;
+        let children: Vec<throng_core::terminal::ShellChild> = self
+            .children(shell)
+            .into_iter()
+            .filter_map(|(pid, started)| {
+                Some(throng_core::terminal::ShellChild { pid, started, argv: command_line(pid)? })
+            })
+            .collect();
+        throng_core::terminal::running_command(&shell_argv, &children)
+    }
+
+    /// `shell`'s direct children, with when each started.
+    fn children(&self, shell: u32) -> Vec<(u32, u64)> {
+        #[cfg(target_os = "linux")]
+        {
+            self.entries
+                .iter()
+                .filter(|(_, parent, _)| *parent == shell)
+                .map(|(pid, _, s)| (*pid, *s))
+                .collect()
+        }
+        #[cfg(target_os = "macos")]
+        {
+            mac::children(shell)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = shell;
+            Vec::new()
+        }
+    }
+}
+
+/// The parent pid and start time (clock ticks since boot) in a `/proc/<pid>/stat` line. The
+/// command name is parenthesised and may itself hold spaces and parentheses, so fields are counted
+/// from the last `)`.
+#[cfg(any(target_os = "linux", test))]
+fn linux_stat(stat: &str) -> Option<(u32, u64)> {
+    let fields: Vec<&str> = stat.get(stat.rfind(')')? + 1..)?.split_whitespace().collect();
+    // After the name: state, ppid, … and starttime is the 20th.
+    Some((fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?))
+}
+
+/// The arguments process `pid` was started with. `None` where they cannot be read.
+#[must_use]
+pub fn command_line(pid: u32) -> Option<Vec<String>> {
+    #[cfg(target_os = "linux")]
+    {
+        let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+        let argv: Vec<String> = bytes
+            .split(|b| *b == 0)
+            .filter(|word| !word.is_empty())
+            .map(|word| String::from_utf8_lossy(word).into_owned())
+            .collect();
+        (!argv.is_empty()).then_some(argv)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        mac::command_line(pid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod mac {
+    //! macOS process introspection: libproc for children and start times, `KERN_PROCARGS2` for
+    //! arguments.
+
+    pub fn children(shell: u32) -> Vec<(u32, u64)> {
+        let Ok(shell) = libc::pid_t::try_from(shell) else { return Vec::new() };
+        let mut pids = vec![0 as libc::pid_t; 256];
+        let bytes = libc::c_int::try_from(pids.len() * std::mem::size_of::<libc::pid_t>()).unwrap_or(0);
+        // SAFETY: the buffer holds `bytes` bytes of pids, which is the size passed; the call writes
+        // at most that and returns how many bytes it wrote.
+        let written = unsafe { libc::proc_listchildpids(shell, pids.as_mut_ptr().cast(), bytes) };
+        let count = usize::try_from(written).unwrap_or(0) / std::mem::size_of::<libc::pid_t>();
+        pids.truncate(count.min(pids.len()));
+        pids.into_iter()
+            .filter(|pid| *pid > 0)
+            .filter_map(|pid| Some((u32::try_from(pid).ok()?, started(pid)?)))
+            .collect()
+    }
+
+    /// When `pid` started, in microseconds since the epoch.
+    fn started(pid: libc::pid_t) -> Option<u64> {
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+        let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
+        // SAFETY: the buffer is a zeroed `proc_bsdinfo` of exactly `size` bytes, which is what this
+        // flavour writes; the call reports how many bytes it wrote.
+        let written =
+            unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, info.as_mut_ptr().cast(), size) };
+        if written != size {
+            return None;
+        }
+        // SAFETY: the call filled the whole struct (checked above); a zeroed one is valid too.
+        let info = unsafe { info.assume_init() };
+        Some(info.pbi_start_tvsec.saturating_mul(1_000_000).saturating_add(info.pbi_start_tvusec))
+    }
+
+    pub fn command_line(pid: u32) -> Option<Vec<String>> {
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, libc::c_int::try_from(pid).ok()?];
+        let mut size: libc::size_t = 0;
+        // SAFETY: a null buffer asks only for the size, written to `size`.
+        let asked = unsafe {
+            libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &raw mut size, std::ptr::null_mut(), 0)
+        };
+        if asked != 0 || size == 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; size];
+        // SAFETY: the buffer is `size` bytes long, which is what is passed; the call writes at
+        // most that and updates `size` to what it wrote.
+        let read = unsafe {
+            libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &raw mut size, std::ptr::null_mut(), 0)
+        };
+        if read != 0 {
+            return None;
+        }
+        buf.truncate(size);
+        parse_procargs(&buf)
+    }
+
+    /// `KERN_PROCARGS2`'s layout: argc as a native int, the executable path, NUL padding, then
+    /// argc NUL-terminated arguments (the environment follows).
+    fn parse_procargs(buf: &[u8]) -> Option<Vec<String>> {
+        let argc = usize::try_from(i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?)).ok()?;
+        let rest = buf.get(4..)?;
+        let exec_end = rest.iter().position(|b| *b == 0)?;
+        let mut words = rest[exec_end..].split(|b| *b == 0).filter(|w| !w.is_empty());
+        let argv: Vec<String> =
+            (0..argc).map_while(|_| words.next()).map(|w| String::from_utf8_lossy(w).into_owned()).collect();
+        (!argv.is_empty()).then_some(argv)
+    }
+}
+
 /// This machine's name, as a shell reporting its directory would write it (`file://<host>/…`).
 #[must_use]
 pub fn hostname() -> Option<String> {
@@ -386,6 +565,32 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_stat_line_is_read_past_a_name_holding_spaces_and_parentheses() {
+        let stat = "4242 (my (odd) cmd) S 17 4242 4242 34816 4242 4194304 1 0 0 0 0 0 0 0 20 0 1 0 987654 0";
+        assert_eq!(linux_stat(stat), Some((17, 987_654)));
+        assert_eq!(linux_stat("garbage"), None);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_shells_newest_child_is_its_running_command() {
+        let mut shell = Command::new("/bin/sh").args(["-c", "sleep 30 & sleep 31; wait"]).spawn().unwrap();
+        let pid = shell.id();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut seen = None;
+        while seen.as_deref() != Some("sleep 31") {
+            assert!(std::time::Instant::now() < deadline, "never saw sleep 31: {seen:?}");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            seen = ProcessTable::snapshot().running_command(pid);
+        }
+        assert_eq!(command_line(pid).unwrap()[0], "/bin/sh");
+        let _ = Command::new("pkill").args(["-P", &pid.to_string()]).status();
+        shell.kill().unwrap();
+        shell.wait().unwrap();
+        assert_eq!(ProcessTable::snapshot().running_command(pid), None, "a gone shell runs nothing");
+    }
 
     #[test]
     fn this_process_is_alive() {
