@@ -1,5 +1,5 @@
-//! The real app, driven through its accessibility tree, against a real daemon process.
-#![cfg(unix)]
+//! The real app, driven through its accessibility tree, against a real daemon process. Tests
+//! that type POSIX shell commands into a terminal run on Linux and macOS; the rest run everywhere.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -12,7 +12,9 @@ use throng_app::{Services, ThrongApp};
 use throng_core::ids::{PanelId, ProjectId};
 use throng_core::paths::PathRules;
 use throng_core::project::{ProjectBook, ProjectInput};
-use throng_core::terminal::{ExitStatus, TerminalPanelConfig};
+#[cfg(unix)]
+use throng_core::terminal::ExitStatus;
+use throng_core::terminal::TerminalPanelConfig;
 use throng_core::workspace::{EditorPanelConfig, Layout, PanelKind, Placement, PreviewPanelConfig};
 use throng_daemon::{Client, Endpoint};
 use throng_persistence::{ACTIVE_PROJECT_KEY, Store};
@@ -93,6 +95,7 @@ fn terminal(config: TerminalPanelConfig) -> PanelKind {
     PanelKind::Terminal(config)
 }
 
+#[cfg(unix)]
 fn startup(command: &str) -> TerminalPanelConfig {
     TerminalPanelConfig { startup_command: Some(command.into()), ..TerminalPanelConfig::default() }
 }
@@ -124,6 +127,7 @@ fn text_of(app: &ThrongApp, panel: PanelId) -> String {
     app.terminal_text(panel).unwrap_or_default()
 }
 
+#[cfg(unix)]
 #[test]
 fn first_run_creates_a_project_and_its_terminal_takes_input() {
     let env = Env::new();
@@ -158,6 +162,7 @@ fn first_run_creates_a_project_and_its_terminal_takes_input() {
     wait(&mut harness, "the command's output", |app| text_of(app, panel).contains("hello-42"));
 }
 
+#[cfg(unix)]
 #[test]
 fn a_busy_terminal_survives_closing_throng_and_reattaches_with_its_output() {
     let env = Env::new();
@@ -222,6 +227,7 @@ fn a_busy_terminal_survives_closing_throng_and_reattaches_with_its_output() {
     });
 }
 
+#[cfg(unix)]
 #[test]
 fn a_clean_exit_frees_the_panel_and_a_failed_one_is_shown_with_its_code() {
     let env = Env::new();
@@ -296,6 +302,7 @@ fn editing_and_saving_keeps_the_files_line_endings() {
     harness.get_by_label("notes.txt");
 }
 
+#[cfg(unix)]
 #[test]
 fn the_shell_starts_at_the_panels_real_size() {
     let env = Env::new();
@@ -421,6 +428,7 @@ fn a_large_file_opens_scrolls_and_edits_without_slow_frames() {
     assert!(saved.ends_with("// comment\nend"));
 }
 
+#[cfg(unix)]
 #[test]
 fn find_in_a_terminal_counts_its_scrollback_and_escape_closes_it() {
     let env = Env::new();
@@ -795,6 +803,7 @@ fn a_path_in_an_editor_is_a_link_that_opens_its_file_at_the_line() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn ctrl_click_on_a_path_in_terminal_output_opens_it_at_the_line() {
     let env = Env::new();
@@ -909,6 +918,7 @@ fn a_preview_opens_beside_its_editor_follows_unsaved_edits_and_follows_links_in_
     assert_eq!(shown(harness.state()).0, root.join("other.md"), "and it keeps the keyboard");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_terminal_reopens_in_the_folder_it_was_last_working_in() {
     let env = Env::new();
@@ -1251,6 +1261,7 @@ fn a_project_editor_synced_into_a_sub_workspace_is_one_document_and_the_window_c
     assert!(harness.state().sub_workspaces().is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_terminal_synced_into_a_sub_workspace_takes_input_there_and_closing_it_there_leaves_it_running() {
     let env = Env::new();
@@ -1287,6 +1298,7 @@ fn a_terminal_synced_into_a_sub_workspace_takes_input_there_and_closing_it_there
     assert_eq!(harness.state().terminal_status(panel), Some(Status::Running));
 }
 
+#[cfg(unix)]
 #[test]
 fn a_terminal_that_remembers_its_command_keeps_what_ran_when_it_was_killed() {
     let env = Env::new();
@@ -1326,6 +1338,7 @@ fn a_terminal_that_remembers_its_command_keeps_what_ran_when_it_was_killed() {
     wait(&mut harness, "the new shell", |app| app.terminal_status(panel) == Some(Status::Running));
 }
 
+#[cfg(unix)]
 #[test]
 fn with_manual_reload_a_saved_terminal_waits_for_reload_and_a_crash_s_command_comes_back() {
     let env = Env::new();
@@ -1463,6 +1476,7 @@ fn a_preview_and_its_editor_scroll_together_both_ways() {
     assert!(close(line, top), "editor at {top} for preview {line}");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_terminal_moved_to_a_sub_workspace_lives_only_there_and_returns_to_its_project() {
     let env = Env::new();
