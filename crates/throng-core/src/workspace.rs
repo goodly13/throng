@@ -27,6 +27,10 @@ pub struct Layout {
     pub tabs: Vec<Tab>,
     pub active_tab: Option<TabId>,
     pub panels: BTreeMap<PanelId, Panel>,
+    /// This project's panels moved to a sub-workspace: their records stay here, in no tab, and
+    /// come back here when they return.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub away: Vec<PanelId>,
 }
 
 /// A tab: a titled split tree.
@@ -398,6 +402,7 @@ impl Layout {
             tabs: Vec::new(),
             active_tab: None,
             panels: BTreeMap::new(),
+            away: Vec::new(),
         };
         layout.add_tab(project, PanelKind::Untyped);
         layout
@@ -444,9 +449,11 @@ impl Layout {
     }
 
     /// Drop panel records no tree refers to (a crash between two writes can leave one behind).
+    /// Panels away in a sub-workspace are not orphans.
     pub fn prune_orphans(&mut self) -> Vec<Panel> {
+        self.away.retain(|id| self.panels.contains_key(id));
         let live: std::collections::BTreeSet<PanelId> =
-            self.tabs.iter().flat_map(|t| t.root.panels()).collect();
+            self.tabs.iter().flat_map(|t| t.root.panels()).chain(self.away.iter().copied()).collect();
         let orphans: Vec<PanelId> = self.panels.keys().filter(|id| !live.contains(id)).copied().collect();
         orphans.into_iter().filter_map(|id| self.panels.remove(&id)).collect()
     }
@@ -523,25 +530,47 @@ impl Layout {
     ) -> PanelId {
         let anchor = anchor
             .or_else(|| self.active_tab().and_then(|t| t.active_panel.or(t.root.panels().first().copied())));
-        let Some(anchor) = anchor.filter(|a| self.tab_of(*a).is_some()) else {
+        if anchor.filter(|a| self.tab_of(*a).is_some()).is_none() {
             return self.add_tab(project, kind).1;
-        };
+        }
         let new = self.new_panel(project, kind);
-        let tab_id = self.tab_of(anchor).expect("checked above");
-        let tab = self.tab_mut(tab_id).expect("tab exists");
-        tab.root.insert(anchor, new, placement);
-        tab.active_panel = Some(new);
-        self.active_tab = Some(tab_id);
+        self.place(new, anchor, placement);
         new
     }
 
-    /// Remove a panel and return its record. Focus moves to the panel before it in layout order, or
-    /// the one after when it was first. A tab left empty is closed.
-    pub fn remove_panel(&mut self, panel: PanelId) -> Option<Panel> {
-        let tab_id = self.tab_of(panel)?;
-        let tab = self.tab_mut(tab_id)?;
+    /// Put an existing panel record into a tab: beside `anchor`, else into the active tab's active
+    /// panel's leaf, else a new tab of its own. It becomes the active panel.
+    fn place(&mut self, panel: PanelId, anchor: Option<PanelId>, placement: Placement) {
+        let anchor = anchor
+            .filter(|a| self.tab_of(*a).is_some())
+            .or_else(|| self.active_tab().and_then(|t| t.active_panel.or(t.root.panels().first().copied())))
+            .filter(|a| self.tab_of(*a).is_some());
+        let Some(anchor) = anchor else {
+            let tab = Tab {
+                id: TabId::new(),
+                title: self.next_tab_title(),
+                title_is_custom: false,
+                root: SplitTree::leaf(panel),
+                active_panel: Some(panel),
+            };
+            self.active_tab = Some(tab.id);
+            self.tabs.push(tab);
+            return;
+        };
+        let tab_id = self.tab_of(anchor).expect("checked above");
+        let tab = self.tab_mut(tab_id).expect("tab exists");
+        tab.root.insert(anchor, panel, placement);
+        tab.active_panel = Some(panel);
+        self.active_tab = Some(tab_id);
+    }
+
+    /// Take a panel out of its tab, keeping its record. Focus moves to the panel before it in
+    /// layout order, or the one after when it was first. A tab left empty is closed.
+    fn detach(&mut self, panel: PanelId) -> bool {
+        let Some(tab_id) = self.tab_of(panel) else { return false };
+        let Some(tab) = self.tab_mut(tab_id) else { return false };
         let order = tab.root.panels();
-        let index = order.iter().position(|p| *p == panel)?;
+        let Some(index) = order.iter().position(|p| *p == panel) else { return false };
         tab.root.remove(panel);
         if tab.root.panels().is_empty() {
             self.close_tab_inner(tab_id);
@@ -550,7 +579,40 @@ impl Layout {
             tab.active_panel = Some(next);
             tab.root.activate(next);
         }
+        true
+    }
+
+    /// Remove a panel and return its record (see [`Self::detach`] for where focus goes).
+    pub fn remove_panel(&mut self, panel: PanelId) -> Option<Panel> {
+        if !self.detach(panel) && !self.away.contains(&panel) {
+            return None;
+        }
+        self.away.retain(|p| *p != panel);
         self.panels.remove(&panel)
+    }
+
+    /// Move a panel to a sub-workspace: out of its tab, its record kept here as away.
+    pub fn send_away(&mut self, panel: PanelId) -> bool {
+        if !self.detach(panel) {
+            return false;
+        }
+        self.away.push(panel);
+        true
+    }
+
+    /// Whether a panel of this project is away in a sub-workspace.
+    #[must_use]
+    pub fn is_away(&self, panel: PanelId) -> bool {
+        self.away.contains(&panel)
+    }
+
+    /// Bring a panel back from a sub-workspace into the active tab, stacked with its active panel
+    /// (a tab of its own when there is none).
+    pub fn bring_back(&mut self, panel: PanelId) -> bool {
+        let Some(at) = self.away.iter().position(|p| *p == panel) else { return false };
+        self.away.remove(at);
+        self.place(panel, None, Placement::Stack);
+        true
     }
 
     /// Close a tab, returning the records of every panel it held.
@@ -673,6 +735,36 @@ fn next_numbered<'a>(prefix: &str, taken: impl Iterator<Item = &'a str>) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panel_sent_away_keeps_its_record_survives_pruning_and_comes_back() {
+        let project = ProjectId::new();
+        let mut layout = Layout::new_default(project);
+        let first = layout.tabs[0].root.panels()[0];
+        let second = layout.add_panel(project, Some(first), Placement::Right, PanelKind::Untyped);
+        assert!(layout.send_away(second));
+        assert!(layout.is_away(second) && layout.tab_of(second).is_none());
+        assert!(layout.panels.contains_key(&second), "its record stays");
+        assert!(layout.prune_orphans().is_empty(), "away is not orphaned");
+        let text = layout.to_json();
+        let read = Layout::from_json(&text).unwrap();
+        assert!(read.is_away(second), "saved and read back");
+
+        // The last panel of a tab going away closes the tab; coming back makes one.
+        assert!(layout.send_away(first));
+        assert!(layout.tabs.is_empty());
+        assert!(layout.bring_back(first));
+        assert_eq!(layout.tabs.len(), 1);
+        assert!(layout.bring_back(second));
+        assert_eq!(layout.tab_of(second), layout.tab_of(first), "stacked with the active panel");
+        assert!(!layout.bring_back(second), "it is back already");
+        assert!(layout.away.is_empty());
+
+        // Removing an away panel drops it for good.
+        layout.send_away(second);
+        assert!(layout.remove_panel(second).is_some());
+        assert!(!layout.panels.contains_key(&second) && layout.away.is_empty());
+    }
 
     #[test]
     fn a_previews_history_steps_back_and_forward_and_a_new_file_drops_what_was_ahead() {

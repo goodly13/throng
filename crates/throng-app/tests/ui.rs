@@ -1462,3 +1462,69 @@ fn a_preview_and_its_editor_scroll_together_both_ways() {
     assert!(top < 200, "the editor followed the preview up: {top}");
     assert!(close(line, top), "editor at {top} for preview {line}");
 }
+
+#[test]
+fn a_terminal_moved_to_a_sub_workspace_lives_only_there_and_returns_to_its_project() {
+    let env = Env::new();
+    let root = env.folder("moving");
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(TerminalPanelConfig::default()));
+    });
+    let mut harness = env.app(None);
+    let panel = first_panel(harness.state());
+    wait(&mut harness, "the shell", |app| app.terminal_status(panel) == Some(Status::Running));
+    harness.get_by_label("Panel 1").click_secondary();
+    steps(&mut harness, 3);
+    harness.get_by_label_contains("Move to Sub-workspace").click();
+    steps(&mut harness, 3);
+    harness.get_by_label("New Sub-workspace").click();
+    steps(&mut harness, 4);
+
+    // Out of its project's tabs, its record kept there as away; shown in the sub-workspace only.
+    let layout = harness.state().active_layout().unwrap();
+    assert!(layout.is_away(panel) && layout.tab_of(panel).is_none(), "{:?}", layout.away);
+    assert_eq!(harness.state().sub_workspaces().len(), 1);
+    harness.get_by_label_contains(", mirrored").click();
+    steps(&mut harness, 2);
+    harness.get_by_label_contains(", mirrored").type_text("echo moved-$((6*7))");
+    harness.key_press(Key::Enter);
+    wait(&mut harness, "the output", |app| text_of(app, panel).contains("moved-42"));
+
+    // "Return to Seeded" brings it back; the emptied sub-workspace goes.
+    harness.get_by_label("Seeded · Panel 1").click_secondary();
+    steps(&mut harness, 3);
+    harness.get_by_label("Return to Seeded").click();
+    steps(&mut harness, 4);
+    let layout = harness.state().active_layout().unwrap();
+    assert!(!layout.is_away(panel) && layout.tab_of(panel).is_some());
+    assert!(harness.state().sub_workspaces().is_empty());
+    assert_eq!(harness.state().terminal_status(panel), Some(Status::Running), "the same shell");
+    assert!(text_of(harness.state(), panel).contains("moved-42"));
+}
+
+#[test]
+fn a_tab_dragged_out_of_the_dock_tears_off_into_a_sub_workspace_window() {
+    let env = Env::new();
+    let root = env.folder("tearing");
+    std::fs::write(root.join("notes.md"), "# Notes\n").unwrap();
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, PanelKind::Editor(EditorPanelConfig { path: Some(root.join("notes.md")) }));
+        let project = layout.panels[&first].origin_project;
+        layout.add_panel(project, Some(first), Placement::Right, PanelKind::Untyped);
+    });
+    let mut harness = env.app(None);
+    steps(&mut harness, 3);
+    let editor = first_panel(harness.state());
+    // Dropped on a panel but away from its split targets (they sit in its middle): the dock makes
+    // it a floating window, which throng tears off into a window of its own.
+    let from = harness.get_by_label("notes.md").rect().center();
+    let to = egui::pos2(1240.0, 740.0);
+    drag(&mut harness, from, to, Modifiers::NONE);
+    steps(&mut harness, 4);
+    let layout = harness.state().active_layout().unwrap();
+    assert!(layout.is_away(editor), "torn off: {:?}", layout.away);
+    assert_eq!(harness.state().sub_workspaces().len(), 1);
+    harness.get_by_label("Seeded · notes.md");
+}

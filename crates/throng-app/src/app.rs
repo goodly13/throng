@@ -99,6 +99,9 @@ pub struct ThrongApp {
     subs: SubWorkspaces,
     /// Whether the sub-workspace list changed since it was stored (window moves, mostly).
     subs_dirty: bool,
+    /// Which of throng's windows had the keyboard this frame, as each reported it.
+    window_focus: Vec<(egui::ViewportId, bool)>,
+    focus_group: crate::focus_group::FocusGroup,
     /// Terminals drawn this frame by the drawing that sizes them.
     drawn: HashSet<PanelId>,
     icon_pack_problems: Vec<(String, String)>,
@@ -279,6 +282,8 @@ impl ThrongApp {
             icon_packs: Vec::new(),
             subs: SubWorkspaces::default(),
             subs_dirty: false,
+            window_focus: Vec::new(),
+            focus_group: crate::focus_group::FocusGroup::default(),
             drawn: HashSet::new(),
             icon_pack_problems: Vec::new(),
             icons_applied: None,
@@ -747,16 +752,32 @@ impl ThrongApp {
     }
 
     /// Show project `pid`'s `panel` in a sub-workspace (a new one when `sub` is `None`), in a new
-    /// tab or beside the active panel of `tab`, and open its window.
-    fn sync_to(&mut self, pid: ProjectId, panel: PanelId, sub: Option<ProjectId>, tab: Option<TabId>) {
+    /// tab or beside the active panel of `tab`, and open its window. `moved`: the panel leaves its
+    /// project's tabs to live there until it returns, rather than showing in both. Returns the
+    /// sub-workspace.
+    fn sync_to(
+        &mut self,
+        pid: ProjectId,
+        panel: PanelId,
+        sub: Option<ProjectId>,
+        tab: Option<TabId>,
+        moved: bool,
+    ) -> Option<ProjectId> {
         if self.subs.contains(pid) {
-            return;
+            return None;
+        }
+        let showable =
+            self.workspaces.get(&pid).and_then(|ws| ws.layout.panels.get(&panel)).is_some_and(|p| {
+                matches!(p.kind, PanelKind::Terminal(_) | PanelKind::Editor(_) | PanelKind::Preview(_))
+            });
+        if !showable {
+            return None;
         }
         let mirror = PanelKind::Mirror(MirrorPanelConfig { project: pid, panel });
         let id = match sub.filter(|s| self.subs.contains(*s)) {
             Some(id) => {
                 self.load_workspace(id);
-                let Some(ws) = self.workspaces.get_mut(&id) else { return };
+                let ws = self.workspaces.get_mut(&id)?;
                 let anchor = tab
                     .and_then(|t| ws.layout.tab(t))
                     .and_then(|t| t.active_panel.or_else(|| t.root.panels().first().copied()));
@@ -788,6 +809,37 @@ impl ThrongApp {
             sub.open = true;
         }
         self.save_subs();
+        if moved && let Some(ws) = self.workspaces.get_mut(&pid) {
+            ws.layout.send_away(panel);
+            ws.rebuild_all();
+            ws.mark_dirty();
+        }
+        Some(id)
+    }
+
+    /// Move every panel of a project's tab that a sub-workspace can show into a new one, in one tab.
+    fn move_tab(&mut self, pid: ProjectId, tab: TabId) {
+        let panels = self.workspaces.get(&pid).and_then(|ws| ws.layout.tab(tab)).map(|t| t.root.panels());
+        let mut target: Option<(ProjectId, TabId)> = None;
+        for panel in panels.unwrap_or_default() {
+            let Some(sub) = self.sync_to(pid, panel, target.map(|t| t.0), target.map(|t| t.1), true) else {
+                continue;
+            };
+            if target.is_none() {
+                target = self.workspaces.get(&sub).and_then(|ws| ws.layout.tabs.first()).map(|t| (sub, t.id));
+            }
+        }
+    }
+
+    /// A moved panel comes back to its project's tabs.
+    fn return_home(&mut self, project: ProjectId, panel: PanelId) {
+        self.load_workspace(project);
+        if let Some(ws) = self.workspaces.get_mut(&project)
+            && ws.layout.bring_back(panel)
+        {
+            ws.rebuild_all();
+            ws.mark_dirty();
+        }
     }
 
     /// Take away every mirror of `project`'s panels (only `panel`'s, when given); a sub-workspace
@@ -817,11 +869,16 @@ impl ThrongApp {
         }
     }
 
-    /// Destroy a sub-workspace: its own panels end with it (their terminals too), and the project
-    /// panels it showed carry on in their projects.
+    /// Destroy a sub-workspace: its own panels end with it (their terminals too), the project
+    /// panels it showed carry on in their projects, and those moved there go back to them.
     fn remove_sub(&mut self, id: ProjectId) {
         self.load_workspace(id);
         if let Some(ws) = self.workspaces.remove(&id) {
+            for panel in ws.layout.panels.values() {
+                if let PanelKind::Mirror(m) = &panel.kind {
+                    self.return_home(m.project, m.panel);
+                }
+            }
             let client = self.link.client();
             for panel in ws.layout.panels.values() {
                 match &panel.kind {
@@ -880,9 +937,10 @@ impl ThrongApp {
                     .map_or_else(|| "Untitled".to_owned(), |n| n.to_string_lossy().into_owned()),
                 _ => record.title.clone(),
             };
+            let away = self.workspaces.get(&source.project).is_some_and(|ws| ws.layout.is_away(source.panel));
             out.insert(
                 mirror,
-                MirrorSource { project, panel: source.panel, kind: record.kind.clone(), title },
+                MirrorSource { project, panel: source.panel, kind: record.kind.clone(), title, away },
             );
         }
         out
@@ -917,10 +975,22 @@ impl ThrongApp {
         }
     }
 
+    /// Bring every throng window forward when one is brought forward from another app, ending
+    /// with the one the user chose so it keeps the keyboard.
+    fn raise_together(&mut self, ctx: &Context) {
+        let seen = std::mem::take(&mut self.window_focus);
+        let windows: Vec<egui::ViewportId> = seen.iter().map(|(id, _)| *id).collect();
+        let focused = seen.iter().find(|(_, f)| *f).map(|(id, _)| *id);
+        for window in self.focus_group.update(focused, &windows, Instant::now()) {
+            ctx.send_viewport_cmd_to(window, ViewportCommand::Focus);
+        }
+    }
+
     fn sub_window(&mut self, ui: &mut Ui, id: ProjectId, class: egui::ViewportClass) {
         let ctx = ui.ctx().clone();
         let Some(name) = self.subs.get(id).map(|s| s.name.clone()) else { return };
         if class == egui::ViewportClass::Immediate {
+            self.window_focus.push((ctx.viewport_id(), ctx.input(|i| i.viewport().focused.unwrap_or(false))));
             if ctx.input(|i| i.viewport().close_requested()) {
                 // Closing the window keeps the sub-workspace; the sidebar opens it again.
                 if let Some(sub) = self.subs.get_mut(id) {
@@ -1704,7 +1774,21 @@ impl ThrongApp {
                 }
                 PanelAction::PickLanguage(panel) => self.pick_language(panel),
                 PanelAction::DropFile(panel, path) => self.drop_file(pid, panel, path),
-                PanelAction::SyncTo { panel, sub, tab } => self.sync_to(pid, panel, sub, tab),
+                PanelAction::SyncTo { panel, sub, tab } => {
+                    self.sync_to(pid, panel, sub, tab, false);
+                }
+                PanelAction::MoveTo { panel, sub, tab } => {
+                    self.sync_to(pid, panel, sub, tab, true);
+                }
+                PanelAction::TearOff(panel) => {
+                    // A panel no sub-workspace can show stays where it was dragged from.
+                    if self.sync_to(pid, panel, None, None, true).is_none()
+                        && let Some(ws) = self.workspaces.get_mut(&pid)
+                    {
+                        ws.rebuild_all();
+                    }
+                }
+                PanelAction::MoveTab(tab) => self.move_tab(pid, tab),
                 PanelAction::Link { target, action, base } => self.link(ctx, pid, &target, action, base),
                 PanelAction::OpenPreview(path) => self.open_preview(pid, path),
                 PanelAction::OpenInEditor(path) => {
@@ -2320,10 +2404,12 @@ impl ThrongApp {
                 }
             }
             PanelKind::Untyped => {}
-            // Closing a mirror closes it here only: its panel lives on in its project.
-            PanelKind::Mirror(_) => {
+            // Closing a mirror closes it here only: its panel lives on in its project, and one moved
+            // here goes back there.
+            PanelKind::Mirror(m) => {
                 self.docs.forget_view(panel);
                 self.previews.remove(&panel);
+                self.return_home(m.project, m.panel);
             }
         }
         if let Some(ws) = self.workspaces.get_mut(&pid) {
@@ -3538,7 +3624,10 @@ impl eframe::App for ThrongApp {
         self.apply_actions(&ctx, actions);
         // Sub-workspace windows draw after the main one, so a terminal on screen in both is sized
         // by its own project's panel.
+        self.window_focus
+            .push((egui::ViewportId::ROOT, ctx.input(|i| i.viewport().focused.unwrap_or(false))));
         self.sub_windows(&ctx);
+        self.raise_together(&ctx);
         self.drawn.clear();
         self.screenshot(&ctx);
     }

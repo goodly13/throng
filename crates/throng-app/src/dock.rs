@@ -53,25 +53,38 @@ fn build(tree: &mut Tree<PanelId>, index: NodeIndex, node: &SplitTree) {
 /// Read a dock back into a split tree. `None` when the dock holds no panels at all.
 #[must_use]
 pub fn from_dock(dock: &DockState<PanelId>) -> Option<SplitTree> {
-    let mut tree = read(dock.main_surface(), NodeIndex::root())?;
-    // Panels dragged out into floating windows are folded back into the main tree: throng's model
-    // has no floating windows yet, and a panel must never disappear from the saved layout.
+    let (tree, torn) = read_dock(dock);
+    let mut tree = tree?;
+    // Panels dragged out into floating windows are folded back into the main tree: a panel must
+    // never disappear from the saved layout.
+    for panel in torn {
+        if let Some(anchor) = tree.panels().last().copied() {
+            tree.insert(anchor, panel, throng_core::workspace::Placement::Stack);
+        }
+    }
+    tree.normalize();
+    Some(tree)
+}
+
+/// The dock's main tree, and the panels dragged out of it into floating windows (a tear-off: the
+/// caller moves them somewhere of their own, or folds them back with [`from_dock`]).
+pub fn read_dock(dock: &DockState<PanelId>) -> (Option<SplitTree>, Vec<PanelId>) {
+    let mut tree = read(dock.main_surface(), NodeIndex::root());
+    let mut torn = Vec::new();
     for (surface_index, surface) in dock.iter_surfaces_indexed() {
         if surface_index == SurfaceIndex::main() {
             continue;
         }
         if let Some(tree_of_window) = surface.node_tree() {
-            for panel in tree_of_window.tabs() {
-                if !tree.contains(*panel)
-                    && let Some(anchor) = tree.panels().last().copied()
-                {
-                    tree.insert(anchor, *panel, throng_core::workspace::Placement::Stack);
-                }
-            }
+            torn.extend(
+                tree_of_window.tabs().copied().filter(|p| !tree.as_ref().is_some_and(|t| t.contains(*p))),
+            );
         }
     }
-    tree.normalize();
-    Some(tree)
+    if let Some(tree) = tree.as_mut() {
+        tree.normalize();
+    }
+    (tree, torn)
 }
 
 fn read(tree: &Tree<PanelId>, index: NodeIndex) -> Option<SplitTree> {
@@ -111,6 +124,21 @@ mod tests {
     use super::*;
     use throng_core::ids::ProjectId;
     use throng_core::workspace::{Layout, PanelKind, Placement};
+
+    #[test]
+    fn a_panel_dragged_into_a_floating_window_is_reported_torn_off_and_otherwise_folded_back() {
+        let (a, b) = (PanelId::new(), PanelId::new());
+        let tree = SplitTree::Leaf { panels: vec![a, b], active: 0 };
+        let mut dock = to_dock(&tree);
+        // What egui_dock does when a tab is dropped away from every drop target.
+        let at = dock.find_tab(&b).unwrap();
+        dock.remove_tab(at);
+        dock.add_window(vec![b]);
+        let (main, torn) = read_dock(&dock);
+        assert_eq!(main, Some(SplitTree::leaf(a)));
+        assert_eq!(torn, [b]);
+        assert_eq!(from_dock(&dock).map(|t| t.panels()), Some(vec![a, b]), "never lost");
+    }
 
     #[test]
     fn a_single_leaf_round_trips() {

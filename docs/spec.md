@@ -223,9 +223,22 @@ missing. [Open work](#open-work) collects every gap in one list.
     closes the mirrors.
   - **Persistence.** Sub-workspaces, their tabs and where each window sits are saved and restored.
     A window saved off every screen opens on one.
-
-  *Not yet:* a single focus group (raising one window raises them all), tearing a tab out by
-  dragging it, and moving a panel rather than showing it.
+  - **Moving rather than showing.**
+    - **Move to Sub-workspace** (the same cascade as Sync) moves a project terminal, editor or
+      preview into a sub-workspace: it leaves its project's tabs, and the project keeps its record
+      as away, saved with the layout.
+    - **Move Tab to Sub-workspace**, on a project tab, moves all its panels that a sub-workspace
+      can show into one new tab of a new sub-workspace.
+    - **Returning.** A moved panel's menu offers **Return to ‹project›**. Closing it there,
+      destroying its sub-workspace, or its sub-workspace emptying all return it to its project,
+      into the active tab. A moved panel is never lost; its terminal keeps running throughout.
+  - **Tear-off.** Dragging a project panel's tab out of the dock, dropped on a panel away from its
+    split targets, moves it into a new sub-workspace window. A panel no sub-workspace can show
+    (an empty panel, Find in Files) stays where it was.
+  - **Focus group.** Bringing any throng window forward from another app brings them all forward,
+    ending with the one chosen so it keeps the keyboard. Moving between throng's own windows raises
+    nothing. Where the windowing system refuses to raise windows (Wayland without an activation
+    token), only the chosen one comes forward.
 
 ### Editors and documents
 
@@ -491,8 +504,6 @@ In rough order of value:
    - Elevated and de-elevated terminals, and WSL shells.
 2. **Publishing.** An `.msi`, and attaching every package to a GitHub release for a `v*` tag
    (FR-045).
-3. **Sub-workspaces** (FR-021): the single focus group, dragging a tab out to tear it off, and moving
-   a panel rather than showing it.
 
 ## Done means
 
