@@ -202,10 +202,10 @@ mod mac {
         let mut pids = vec![0 as libc::pid_t; 256];
         let bytes = libc::c_int::try_from(pids.len() * std::mem::size_of::<libc::pid_t>()).unwrap_or(0);
         // SAFETY: the buffer holds `bytes` bytes of pids, which is the size passed; the call writes
-        // at most that and returns how many bytes it wrote.
-        let written = unsafe { libc::proc_listchildpids(shell, pids.as_mut_ptr().cast(), bytes) };
-        let count = usize::try_from(written).unwrap_or(0) / std::mem::size_of::<libc::pid_t>();
-        pids.truncate(count.min(pids.len()));
+        // at most that and returns how many pids it wrote (libproc divides the byte count).
+        let count = unsafe { libc::proc_listchildpids(shell, pids.as_mut_ptr().cast(), bytes) };
+        // Read either way, a count is safe: unwritten slots stay zero and are dropped below.
+        pids.truncate(usize::try_from(count).unwrap_or(0).min(pids.len()));
         pids.into_iter()
             .filter(|pid| *pid > 0)
             .filter_map(|pid| Some((u32::try_from(pid).ok()?, started(pid)?)))
@@ -573,11 +573,25 @@ mod tests {
         assert_eq!(linux_stat("garbage"), None);
     }
 
+    /// A shell and its children, ended however the test ends.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    struct Reaped(std::process::Child);
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            let _ = Command::new("pkill").args(["-P", &self.0.id().to_string()]).status();
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_shells_newest_child_is_its_running_command() {
-        let mut shell = Command::new("/bin/sh").args(["-c", "sleep 30 & sleep 31; wait"]).spawn().unwrap();
-        let pid = shell.id();
+        let shell =
+            Reaped(Command::new("/bin/sh").args(["-c", "sleep 30 & sleep 31; wait"]).spawn().unwrap());
+        let pid = shell.0.id();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut seen = None;
         while seen.as_deref() != Some("sleep 31") {
@@ -586,9 +600,7 @@ mod tests {
             seen = ProcessTable::snapshot().running_command(pid);
         }
         assert_eq!(command_line(pid).unwrap()[0], "/bin/sh");
-        let _ = Command::new("pkill").args(["-P", &pid.to_string()]).status();
-        shell.kill().unwrap();
-        shell.wait().unwrap();
+        drop(shell);
         assert_eq!(ProcessTable::snapshot().running_command(pid), None, "a gone shell runs nothing");
     }
 
