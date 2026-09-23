@@ -1170,8 +1170,9 @@ mod tests {
             return;
         }
         let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-        let cmd = Path::new(&root).join(r"System32\cmd.exe");
-        let piped = spawn_deelevated(&cmd, &["/d", "/c", "whoami", "/groups"]).unwrap();
+        // By its full path: a `whoami` earlier on PATH (Git's, on CI) is another program.
+        let whoami = Path::new(&root).join(r"System32\whoami.exe");
+        let piped = spawn_deelevated(&whoami, &["/groups", "/fo", "list"]).unwrap();
         drop(piped.stdin);
         let mut out = String::new();
         let mut stdout = piped.stdout;
