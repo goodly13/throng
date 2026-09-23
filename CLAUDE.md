@@ -29,6 +29,9 @@ matches the shell running it.
 A change to `packaging/` or the Package workflow is done when `.github/workflows/package.yml` is
 green too: it builds each package and runs it from where a user would.
 
+A `v<version>` tag publishes a GitHub release, so pushing one is a public act: only when asked,
+and only for the version in `Cargo.toml`.
+
 ## Seeing the app without a display
 
 On a Linux container with no display, render the real app to a file:

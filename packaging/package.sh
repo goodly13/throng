@@ -9,6 +9,7 @@
 #            $APPLE_APP_PASSWORD when those are set; ad-hoc signed otherwise, which runs on the
 #            machine that built it but is refused by Gatekeeper elsewhere.
 #   Windows  throng-<version>-windows-<machine>.zip
+#            throng-<version>-windows-<machine>.msi    (when WiX v5's `wix` is on PATH)
 #
 # Usage: packaging/package.sh [--skip-build]   (--skip-build packages what target/ already holds)
 #
@@ -182,6 +183,15 @@ windows() {
   powershell -NoProfile -Command \
     "Compress-Archive -Path '$(cygpath -w "$stage")\\*' -DestinationPath '$(cygpath -w "$dist/$name.zip")' -Force"
   rm -rf "$stage"
+
+  # A per-user installer.
+  if command -v wix >/dev/null; then
+    wix build "$(cygpath -w "$here/windows/throng.wxs")" -arch x64 \
+      -d "Version=$version" -d "BinDir=$(cygpath -w "$root/target/release")" -d "Root=$(cygpath -w "$root")" \
+      -o "$(cygpath -w "$dist/$name.msi")"
+  else
+    echo "package.sh: wix not found; no .msi" >&2
+  fi
 }
 
 case "$(uname -s)" in

@@ -1,7 +1,8 @@
 name: Package
 
 # Installers: each package is built, then installed, mounted or unpacked and run (`throng --version`)
-# from where a user would run it, and kept as a workflow artifact. Nothing is published yet.
+# from where a user would run it, and kept as a workflow artifact. A v* tag that names the workspace
+# version also publishes them all as a GitHub release.
 #
 # macOS packages are signed and notarised when the repository has these secrets, and ad-hoc signed
 # (runnable where built, refused by Gatekeeper elsewhere) when it does not:
@@ -150,8 +151,32 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: WiX (for the .msi)
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          echo "$USERPROFILE/.dotnet/tools" >> "$GITHUB_PATH"
+
       - name: Package
         run: packaging/package.sh
+
+      - name: Install the .msi, run it from where it went, and uninstall it
+        shell: pwsh
+        run: |
+          $msi = (Get-ChildItem dist/throng-*-windows-*.msi).FullName
+          $log = Join-Path $env:RUNNER_TEMP 'msi.log'
+          $p = Start-Process msiexec -ArgumentList '/i', "`"$msi`"", '/qn', '/l*v', "`"$log`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content $log -Tail 80; exit $p.ExitCode }
+          $dir = (Get-ItemProperty HKCU:\Software\throng).InstallFolder
+          if (-not $dir.StartsWith($env:LOCALAPPDATA)) { throw "installed per machine, at $dir" }
+          $exe = Join-Path $dir 'throng.exe'
+          $version = & $exe --version | Out-String
+          if ($version -notmatch '^throng ') { throw "unexpected version output: $version" }
+          if (-not (Test-Path (Join-Path $dir 'NOTICE.txt'))) { throw 'no NOTICE beside the program' }
+          $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\throng.lnk'
+          if (-not (Test-Path $shortcut)) { throw 'no Start menu shortcut' }
+          $p = Start-Process msiexec -ArgumentList '/x', "`"$msi`"", '/qn' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+          if (Test-Path $exe) { throw 'still installed after uninstalling' }
 
       - name: Unpack the .zip and run it
         run: |
@@ -163,5 +188,34 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: throng-windows
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.msi
           if-no-files-found: error
+
+  publish:
+    # A v* tag publishes every package, each already installed and run above, as a GitHub release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: The tag names the version being released
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          test "$GITHUB_REF_NAME" = "v$version" || { echo "The tag $GITHUB_REF_NAME is not v$version." >&2; exit 1; }
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" --title "throng $GITHUB_REF_NAME" --generate-notes --verify-tag dist/*
