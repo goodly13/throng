@@ -337,6 +337,21 @@ fn editor_on(env: &Env, name: &str, contents: &str) -> (PathBuf, Harness<'static
     (file, harness, panel)
 }
 
+/// Click `label` once its widget has stopped moving. A modal sizes itself over its first frames,
+/// and a click before it settles lands beside the button, however long a slow machine takes.
+fn click_settled(harness: &mut Harness<'static, ThrongApp>, label: &str) {
+    let deadline = Instant::now() + WAIT;
+    let (mut last, mut still) = (None, 0);
+    while still < 3 {
+        harness.step();
+        let rect = harness.query_by_label(label).map(|node| node.rect());
+        still = if rect.is_some() && rect == last { still + 1 } else { 0 };
+        last = rect;
+        assert!(Instant::now() < deadline, "{label} never settled");
+    }
+    harness.get_by_label(label).click();
+}
+
 /// Step frames for `ms` of real time (debounces).
 fn settle(harness: &mut Harness<'static, ThrongApp>, ms: u64) {
     let until = Instant::now() + Duration::from_millis(ms);
@@ -533,11 +548,12 @@ fn find_in_files_lists_results_and_replace_all_writes_after_a_warning() {
     harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "Replace with").type_text("pin");
     steps(&mut harness, 2);
     harness.get_by_label("Replace All").click();
-    // A modal sizes itself over its first frames; a click before it settles lands outside it.
-    settle(&mut harness, 200);
     // The files are not open: throng warns before writing them.
-    harness.get_by_label("Replace in Files").click();
-    steps(&mut harness, 3);
+    click_settled(&mut harness, "Replace in Files");
+    let a = root.join("a.txt");
+    wait(&mut harness, "the files to be written", |_| {
+        std::fs::read_to_string(&a).is_ok_and(|t| t != "alpha needle\n")
+    });
     assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "alpha pin\n");
     assert_eq!(std::fs::read_to_string(root.join("sub/b.txt")).unwrap(), "pin one\npin two\n");
     assert_eq!(std::fs::read_to_string(root.join("node_modules/x.txt")).unwrap(), "needle\n");
