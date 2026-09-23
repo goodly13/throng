@@ -23,8 +23,9 @@
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
 
-    <!-- Per-user components are kept by an HKCU value, as Windows Installer expects. -->
-    <Component Id="Program" Directory="INSTALLFOLDER">
+    <!-- Per-user components are kept by an HKCU value, as Windows Installer expects. A component
+         with files and a registry key path needs a fixed GUID; these must never change. -->
+    <Component Id="Program" Directory="INSTALLFOLDER" Guid="9f028e8b-dce7-4311-b65e-4d62f678990e">
       <File Id="ThrongExe" Source="$(BinDir)\throng.exe" />
       <File Id="License" Source="$(Root)\LICENSE" Name="LICENSE.txt" />
       <File Id="Notice" Source="$(Root)\NOTICE" Name="NOTICE.txt" />
@@ -35,7 +36,7 @@
       <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsFolder" On="uninstall" />
     </Component>
 
-    <Component Id="StartMenu" Directory="ProgramMenuFolder">
+    <Component Id="StartMenu" Directory="ProgramMenuFolder" Guid="3a6a71a9-c17b-40c0-9ac2-805f10f78bce">
       <Shortcut Id="StartMenuShortcut" Name="throng" Description="Project-first terminal and editor workspace"
                 Target="[INSTALLFOLDER]throng.exe" WorkingDirectory="INSTALLFOLDER" />
       <RegistryValue Root="HKCU" Key="Software\throng" Name="StartMenuShortcut" Type="integer" Value="1"
