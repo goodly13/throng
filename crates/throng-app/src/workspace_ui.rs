@@ -18,7 +18,7 @@ use throng_core::workspace::{
 use throng_daemon::Client;
 use throng_protocol::Request;
 
-use crate::dock::{from_dock, to_dock};
+use crate::dock::{from_dock, read_dock, to_dock};
 use crate::editor::{self, Disk, Documents, EditorStyle};
 use crate::find_bar;
 use crate::search_panel::{self, SearchAction, SearchState};
@@ -103,6 +103,16 @@ pub enum PanelAction {
         href: String,
         action: crate::links::LinkAction,
     },
+    /// Move this project panel into a sub-workspace, out of its project's tabs until it returns.
+    MoveTo {
+        panel: PanelId,
+        sub: Option<ProjectId>,
+        tab: Option<TabId>,
+    },
+    /// A panel dragged out of the dock: moved into a new sub-workspace window.
+    TearOff(PanelId),
+    /// Move a tab's panels into a new sub-workspace.
+    MoveTab(TabId),
     /// Show this project panel in a sub-workspace (`None`: a new one), in a tab of it (`None`: a
     /// new tab).
     SyncTo {
@@ -119,6 +129,8 @@ pub struct MirrorSource {
     pub panel: PanelId,
     pub kind: PanelKind,
     pub title: String,
+    /// The panel was moved here: it is in none of its project's tabs until it returns.
+    pub away: bool,
 }
 
 /// A sub-workspace as the Sync to Sub-workspace menu offers it.
@@ -195,11 +207,18 @@ pub struct PanelCtx<'a> {
     pub sub_workspace: bool,
 }
 
-/// Sync to Sub-workspace ▸ New Sub-workspace | <sub-workspace> ▸ New Tab | <tab>.
-fn sync_menu(ui: &mut Ui, panel: PanelId, subs: &[SubTarget], actions: &mut Vec<PanelAction>) {
-    ui.menu_button("Sync to Sub-workspace", |ui| {
+/// `<label>` ▸ New Sub-workspace | <sub-workspace> ▸ New Tab | <tab>: Sync to Sub-workspace (shown
+/// in both places) and Move to Sub-workspace (shown there only) share it.
+fn sub_menu(
+    ui: &mut Ui,
+    label: &str,
+    subs: &[SubTarget],
+    actions: &mut Vec<PanelAction>,
+    action: impl Fn(Option<ProjectId>, Option<TabId>) -> PanelAction,
+) {
+    ui.menu_button(label, |ui| {
         if ui.button("New Sub-workspace").clicked() {
-            actions.push(PanelAction::SyncTo { panel, sub: None, tab: None });
+            actions.push(action(None, None));
             ui.close();
         }
         if !subs.is_empty() {
@@ -208,12 +227,12 @@ fn sync_menu(ui: &mut Ui, panel: PanelId, subs: &[SubTarget], actions: &mut Vec<
         for target in subs {
             ui.menu_button(&target.name, |ui| {
                 if ui.button("New Tab").clicked() {
-                    actions.push(PanelAction::SyncTo { panel, sub: Some(target.id), tab: None });
+                    actions.push(action(Some(target.id), None));
                     ui.close();
                 }
                 for (tab, title) in &target.tabs {
                     if ui.button(title).clicked() {
-                        actions.push(PanelAction::SyncTo { panel, sub: Some(target.id), tab: Some(*tab) });
+                        actions.push(action(Some(target.id), Some(*tab)));
                         ui.close();
                     }
                 }
@@ -427,11 +446,22 @@ impl TabViewer for Viewer<'_, '_> {
         // A project's terminal, editor or preview can be shown in a sub-workspace too.
         if syncable && !self.ctx.sub_workspace {
             ui.separator();
-            sync_menu(ui, panel, self.ctx.subs, self.ctx.actions);
+            sub_menu(ui, "Sync to Sub-workspace", self.ctx.subs, self.ctx.actions, |sub, tab| {
+                PanelAction::SyncTo { panel, sub, tab }
+            });
+            sub_menu(ui, "Move to Sub-workspace", self.ctx.subs, self.ctx.actions, |sub, tab| {
+                PanelAction::MoveTo { panel, sub, tab }
+            });
         }
         ui.separator();
-        // A mirror is closed here and lives on in its project ("Close", not "Destroy").
-        let close = if mirror { "Close Here" } else { "Close Panel" };
+        // A mirror is closed here and lives on in its project ("Close", not "Destroy"); one moved
+        // here goes back to its project.
+        let away = self.ctx.mirrors.get(&panel).filter(|m| m.away);
+        let close = match away {
+            Some(source) => format!("Return to {}", source.project.name),
+            None if mirror => "Close Here".to_owned(),
+            None => "Close Panel".to_owned(),
+        };
         if ui.button(close).clicked() {
             self.ctx.actions.push(PanelAction::Close(panel));
             ui.close();
@@ -508,6 +538,14 @@ pub fn show(
         }
     }
     let focused = dock.find_active_focused().map(|(_, panel)| *panel);
+    // A panel of a project dragged out of the dock is torn off into a sub-workspace window of its
+    // own (in a sub-workspace it just folds back). Until the move takes it out, the layout keeps it
+    // folded back, so it can never be lost between the two.
+    if !viewer.ctx.sub_workspace {
+        for panel in read_dock(dock).1 {
+            viewer.ctx.actions.push(PanelAction::TearOff(panel));
+        }
+    }
     let tree = from_dock(dock);
     if let Some(tab) = layout.tab_mut(tab_id) {
         if let Some(tree) = tree
@@ -565,6 +603,10 @@ fn tab_strip(
             response.context_menu(|ui| {
                 if ui.button("Rename…").clicked() {
                     *renaming = Some((id, title.clone()));
+                    ui.close();
+                }
+                if !ctx.sub_workspace && ui.button("Move Tab to Sub-workspace").clicked() {
+                    ctx.actions.push(PanelAction::MoveTab(id));
                     ui.close();
                 }
                 if ui.button("Close Tab").clicked() {

@@ -9,6 +9,7 @@ pub mod explorer;
 pub mod file_ops;
 pub mod file_search;
 pub mod find_bar;
+pub mod focus_group;
 pub mod icons;
 pub mod keymap;
 pub mod link;

@@ -69,6 +69,9 @@ never open a release build's data.
     rename or destroy it.
   - They come back after a restart, window positions included.
   - Panels made in a sub-workspace belong to it and start in your home folder.
+  - *Move to Sub-workspace* (or dragging a tab out of the dock) moves a panel there instead of
+    showing it in both places. *Return to ‹project›* brings it back, as does closing it or
+    destroying the sub-workspace.
 - **Themes**: fifteen are built in (Preferences → Themes). *Duplicate* makes an editable copy with a
   picker for each of its 39 colour tokens. Your themes are JSON files in `<config>/themes`. A theme
   may set only some tokens, and throng re-reads the files when they change.
