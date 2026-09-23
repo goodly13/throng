@@ -13,6 +13,17 @@ pub struct Bases {
     pub first: Option<PathBuf>,
     pub root: Option<PathBuf>,
     pub home: Option<PathBuf>,
+    /// Whether `/c/…` and `/mnt/c/…` name Windows drives (Git Bash, MSYS, Cygwin and WSL output
+    /// on Windows).
+    pub drive_forms: bool,
+}
+
+impl Bases {
+    /// Bases for this platform: home from the environment, drive forms on Windows.
+    #[must_use]
+    pub fn here(first: Option<PathBuf>, root: Option<PathBuf>) -> Self {
+        Self { first, root, home: std::env::home_dir(), drive_forms: cfg!(windows) }
+    }
 }
 
 /// What following a link does.
@@ -70,11 +81,17 @@ pub fn resolve(written: &str, bases: &Bases) -> PathBuf {
             candidates.push(home.join(rest));
         }
     } else if written.starts_with('/') && !written.starts_with("//") {
-        // A leading `/` is tried against the project root first, then as itself.
+        // On Windows, `/c/…` or `/mnt/c/…` is a Unix-like shell's spelling of a drive path, tried
+        // first. Otherwise a leading `/` is tried against the project root first, then as itself.
+        let drive = throng_core::links::windows_drive_form(written).filter(|_| bases.drive_forms);
+        let as_itself = drive.is_none();
+        candidates.extend(drive.map(PathBuf::from));
         if let Some(root) = &bases.root {
             candidates.push(root.join(written.trim_start_matches('/')));
         }
-        candidates.push(PathBuf::from(written));
+        if as_itself {
+            candidates.push(PathBuf::from(written));
+        }
     } else if Path::new(written).is_absolute() || written.starts_with("//") || written.starts_with("\\\\") {
         candidates.push(PathBuf::from(written));
     } else {
@@ -153,8 +170,12 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("README.md"), "").unwrap();
         std::fs::write(root.join("src/lib.rs"), "").unwrap();
-        let bases =
-            Bases { first: Some(root.join("src")), root: Some(root.clone()), home: Some(dir.path().into()) };
+        let bases = Bases {
+            first: Some(root.join("src")),
+            root: Some(root.clone()),
+            home: Some(dir.path().into()),
+            ..Bases::default()
+        };
         assert_eq!(resolve("lib.rs", &bases), root.join("src/lib.rs"));
         assert_eq!(resolve("README.md", &bases), root.join("README.md"), "not beside the file: the root");
         assert_eq!(resolve("../README.md", &bases), root.join("README.md"));
@@ -179,7 +200,7 @@ mod tests {
         std::fs::write(root.join("src/a.rs"), "").unwrap();
         std::fs::write(dir.path().join("outside.txt"), "").unwrap();
         let rules = throng_platform::path_rules();
-        let bases = Bases { first: None, root: Some(root.clone()), home: None };
+        let bases = Bases { root: Some(root.clone()), ..Bases::default() };
         let a_rs = root.join("src").join("a.rs");
         let file = |path: &str, line| Target::File { path: path.into(), line, column: None };
         assert_eq!(
@@ -195,5 +216,23 @@ mod tests {
             Follow::Url("https://x.dev".into())
         );
         assert_eq!(address(&file("src/a.rs", Some(3)), &bases), format!("{}:3", a_rs.display()));
+    }
+
+    #[test]
+    fn a_unix_shells_drive_path_names_the_windows_drive_only_where_drives_are() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("p");
+        std::fs::create_dir_all(root.join("c")).unwrap();
+        std::fs::write(root.join("c/in-project.rs"), "").unwrap();
+        let windows = Bases { root: Some(root.clone()), drive_forms: true, ..Bases::default() };
+        assert_eq!(resolve("/c/Users/me/a.rs", &windows), PathBuf::from(r"C:\Users\me\a.rs"));
+        assert_eq!(resolve("/mnt/c/Users/me/a.rs", &windows), PathBuf::from(r"C:\Users\me\a.rs"));
+        assert_eq!(
+            resolve("/c/in-project.rs", &windows),
+            root.join("c/in-project.rs"),
+            "a project file that exists still wins over a drive path that does not"
+        );
+        let unix = Bases { root: Some(root.clone()), ..Bases::default() };
+        assert_eq!(resolve("/mnt/c/x.rs", &unix), root.join("mnt/c/x.rs"), "no drives: the usual rule");
     }
 }

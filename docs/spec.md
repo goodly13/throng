@@ -313,8 +313,10 @@ missing. [Open work](#open-work) collects every gap in one list.
     Manager and Open with Default Program for files.
   - **Settings.** `editor.links.detectInEditors` and `editor.links.detectInTerminals` switch
     detection off.
-
-  *Not yet:* Git Bash and WSL drive forms (`/c/…`, `/mnt/c/…`) are not mapped.
+  - **Drive forms.** On Windows, the drive paths that Git Bash, MSYS, Cygwin and WSL print
+    (`/c/…`, `/cygdrive/c/…`, `/mnt/c/…`) name the Windows drive (`C:\…`). They are tried before
+    the project root, and an existing project file still wins over a drive path that does not
+    exist.
 - **FR-038** Markdown previews. `Preview` is a panel kind, saved with the layout and bound to a file.
   - **Opening.** A preview opens from an editor's tab and content menus and from the tree's menu.
     It goes beside the file's editor, on the right, when the file is open in one; otherwise it
@@ -424,7 +426,6 @@ In rough order of value:
    - Run the daemon and UI tests on Windows (they drive a Unix PTY today).
    - A live working directory for Windows shells (FR-014).
    - Elevated and de-elevated terminals, and WSL shells.
-   - Map Git Bash and WSL drive paths in links (FR-037).
 2. **Publishing.** An `.msi`, and attaching every package to a GitHub release for a `v*` tag
    (FR-045).
 3. **Sub-workspaces** (FR-021): the single focus group, dragging a tab out to tear it off, and moving

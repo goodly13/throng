@@ -1759,7 +1759,7 @@ impl ThrongApp {
             Some(root) if b.is_relative() => root.join(b),
             _ => b,
         });
-        let bases = crate::links::Bases { first: base, root, home: std::env::home_dir() };
+        let bases = crate::links::Bases::here(base, root);
         let resolved = || match target {
             Target::File { path, .. } => Some(crate::links::resolve(path, &bases)),
             _ => None,
@@ -1876,11 +1876,7 @@ impl ThrongApp {
         let file = file.replace("%20", " ");
         let file = file.strip_prefix("file://").unwrap_or(&file);
         let root = self.book.get(pid).map(|p| p.root.clone());
-        let bases = crate::links::Bases {
-            first: source.parent().map(Path::to_path_buf),
-            root: root.clone(),
-            home: std::env::home_dir(),
-        };
+        let bases = crate::links::Bases::here(source.parent().map(Path::to_path_buf), root.clone());
         let resolved = crate::links::resolve(file, &bases);
         if action == LinkAction::Copy {
             ctx.copy_text(resolved.display().to_string());
