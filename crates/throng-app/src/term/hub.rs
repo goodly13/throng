@@ -5,7 +5,7 @@
 //! Principle III lifecycle: busy terminals survive the UI and come back with their scrollback, idle
 //! ones were closed with the app and start fresh.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -53,6 +53,14 @@ pub enum HubEvent {
         panel: PanelId,
         dir: PathBuf,
     },
+    /// What a remembering terminal runs now (`None`: nothing), for command memory.
+    Observed {
+        panel: PanelId,
+        running: Option<String>,
+    },
+    /// A remembering terminal cold-started after an end nobody saw: what it last ran became its
+    /// startup command.
+    Captured(PanelId),
 }
 
 /// How often the shells' working directories are read.
@@ -77,6 +85,11 @@ pub struct TerminalHub {
     /// a closing window still draws would re-attach the idle shells quitting just closed, find
     /// them gone, and start new ones that outlive the app (Principle III).
     pub closing: bool,
+    /// Panels whose terminal starts only when reloaded: every terminal a layout held when it loaded
+    /// with `terminal.reloadMode` manual. One still running reattaches all the same.
+    dormant: HashSet<PanelId>,
+    /// Events raised outside a daemon event, for the app's next look.
+    queued: Vec<HubEvent>,
 }
 
 impl TerminalHub {
@@ -142,6 +155,30 @@ impl TerminalHub {
         self.plans.remove(&panel);
     }
 
+    /// These panels' terminals start only when reloaded (they reattach if still running).
+    pub fn keep_dormant(&mut self, panels: impl IntoIterator<Item = PanelId>) {
+        self.dormant.extend(panels);
+    }
+
+    /// Whether a panel's terminal waits to be reloaded rather than starting.
+    #[must_use]
+    pub fn is_dormant(&self, panel: PanelId) -> bool {
+        self.views.get(&panel).is_some_and(|v| v.status == Status::Dormant)
+    }
+
+    /// Events raised since the app last looked, outside a daemon event.
+    pub fn take_queued(&mut self) -> Vec<HubEvent> {
+        std::mem::take(&mut self.queued)
+    }
+
+    /// What `panel`'s shell runs right now, read at the moment of an end the app is about to
+    /// cause. `None` when the shell is not known yet: the last observation stands.
+    #[must_use]
+    pub fn observe_now(&self, panel: PanelId) -> Option<Option<String>> {
+        let pid = self.views.get(&panel)?.shell_pid?;
+        Some(throng_platform::process::ProcessTable::snapshot().running_command(pid))
+    }
+
     /// End a panel's terminal at the user's request.
     pub fn kill(&mut self, panel: PanelId, client: Option<&Client>) {
         if let Some(client) = client {
@@ -151,8 +188,9 @@ impl TerminalHub {
         self.plans.remove(&panel);
     }
 
-    /// Start a fresh shell in a panel whose terminal failed or exited.
+    /// Start a fresh shell in a panel whose terminal failed, exited or is dormant.
     pub fn restart(&mut self, panel: PanelId, client: Option<&Client>) {
+        self.dormant.remove(&panel);
         if let Some(client) = client {
             client.post(Request::Forget { terminal: panel.into() });
         }
@@ -160,15 +198,23 @@ impl TerminalHub {
             view.status = Status::Connecting;
             view.pending = None;
         }
-        if let (Some(plan), Some(client)) = (self.plans.get(&panel).cloned(), client) {
-            self.spawn(panel, &plan, client);
+        if let Some(client) = client {
+            self.spawn(panel, client);
         }
     }
 
-    fn spawn(&mut self, panel: PanelId, plan: &SpawnPlan, client: &Client) {
+    /// A cold start of `panel`'s shell, from its plan.
+    fn spawn(&mut self, panel: PanelId, client: &Client) {
         if self.closing {
             return;
         }
+        let Some(plan) = self.plans.get_mut(&panel) else { return };
+        // A remembering terminal that ended while nobody watched (a crash, a restart) captures
+        // what it last ran now; the app records the same capture in the layout.
+        if plan.config.capture() {
+            self.queued.push(HubEvent::Captured(panel));
+        }
+        let plan = plan.clone();
         let Some(view) = self.views.get_mut(&panel) else { return };
         let shell = throng_platform::shells::choose(
             &self.shells,
@@ -250,15 +296,26 @@ impl TerminalHub {
             ClientEvent::Reply { id, result } if self.listing == Some(id) => {
                 self.listing = None;
                 if let Ok(Reply::Terminals(list)) = result {
+                    // One process snapshot serves every terminal, and only when one remembers.
+                    let remembering = self.plans.values().any(|p| p.config.remember_command);
+                    let table = remembering.then(throng_platform::process::ProcessTable::snapshot);
                     for info in list {
                         let panel = PanelId::from(info.terminal);
                         let Some(view) = self.views.get_mut(&panel) else { continue };
-                        view.process_cwd = info
-                            .pid
-                            .filter(|_| info.exited.is_none())
-                            .and_then(throng_platform::process::working_directory);
+                        view.shell_pid = info.pid.filter(|_| info.exited.is_none());
+                        view.process_cwd =
+                            view.shell_pid.and_then(throng_platform::process::working_directory);
                         if let Some(dir) = view.settle_directory() {
                             out.push(HubEvent::Directory { panel, dir });
+                        }
+                        if let (Some(table), Some(pid), Some(plan)) =
+                            (&table, view.shell_pid, self.plans.get(&panel))
+                            && plan.config.remember_command
+                        {
+                            let running = table.running_command(pid);
+                            if plan.config.running_command != running {
+                                out.push(HubEvent::Observed { panel, running });
+                            }
                         }
                     }
                 }
@@ -275,8 +332,10 @@ impl TerminalHub {
                         }
                     }
                     (Pending::Attach, Err(message)) if message == throng_protocol::NO_SUCH_TERMINAL => {
-                        if let (Some(plan), Some(client)) = (self.plans.get(&panel).cloned(), client) {
-                            self.spawn(panel, &plan, client);
+                        if self.dormant.contains(&panel) {
+                            view.status = Status::Dormant;
+                        } else if let Some(client) = client {
+                            self.spawn(panel, client);
                         }
                     }
                     (_, Err(message)) => view.status = Status::Failed(message),
@@ -285,6 +344,7 @@ impl TerminalHub {
             }
             ClientEvent::Disconnected { .. } => {}
         }
+        out.append(&mut self.queued);
         out
     }
 
@@ -299,6 +359,12 @@ impl TerminalHub {
             // The UI already ended this terminal (Kill, Close): its panel has moved on, and reporting
             // the end again would overwrite what the panel's picker remembered.
             return;
+        }
+        // The shell ended on its own: whatever it ran is not a command to remember.
+        if let Some(plan) = self.plans.get_mut(&panel)
+            && plan.config.running_command.take().is_some()
+        {
+            out.push(HubEvent::Observed { panel, running: None });
         }
         if should_surface_exit(status) {
             if let Some(view) = self.views.get_mut(&panel) {

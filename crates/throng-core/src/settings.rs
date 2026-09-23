@@ -103,6 +103,13 @@ pub const SETTINGS: &[SettingDef] = &[
         kind: SettingKind::Bool { default: true },
     },
     SettingDef {
+        key: "terminal.reloadMode",
+        label: "Start terminals",
+        help: "Automatic starts a project's terminals when it opens. Manual leaves them stopped until \
+               you reload each one. A terminal still running reattaches either way.",
+        kind: SettingKind::Choice { options: &["automatic", "manual"], default: "automatic" },
+    },
+    SettingDef {
         key: "terminal.showStatusBar",
         label: "Show terminal status bar",
         help: "A strip under each terminal with its shell and working directory.",
@@ -572,6 +579,11 @@ impl Settings {
     #[must_use]
     pub fn remember_directory(&self) -> bool {
         self.bool("terminal.defaultRememberDirectory")
+    }
+    /// Whether a project's terminals wait to be reloaded rather than starting when it opens.
+    #[must_use]
+    pub fn manual_reload(&self) -> bool {
+        self.text("terminal.reloadMode") == "manual"
     }
     /// Whether editors show their status strip, and which readouts it carries: (strip, caret,
     /// counts).

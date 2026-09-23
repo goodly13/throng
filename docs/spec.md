@@ -147,6 +147,37 @@ missing. [Open work](#open-work) collects every gap in one list.
   wrapped, and counts a wide character once.
 - **FR-016** Quitting leaves terminals as they should be. Once quitting is confirmed, a terminal's
   end changes no panel, and nothing attaches or starts a terminal.
+- **FR-046** Command memory. A terminal panel can remember the command running in it. The
+  picker's *Remember the running command* checkbox is off by default, and it never touches
+  directory memory.
+  - **Observing.** While it remembers, throng notes what the shell runs, on the same 1.5 s
+    observation as the working directory, using one process snapshot for every terminal. What runs
+    is the shell's most recently started direct child; a copy of the shell itself (a subshell) does
+    not count, and neither do grandchildren. It is read from outside the shell (`/proc` on Linux,
+    libproc on macOS), so no shell needs a hook.
+  - **Keeping.** The last command seen is saved with the layout, so an end nobody saw (a crash, a
+    daemon or machine restart) still captures it: the next cold start makes it the startup command
+    before running it.
+  - **Capturing.** Killing the terminal, and *Terminate All* when quitting, read what runs at that
+    moment. A command becomes the startup command, and the picker shows it; nothing running leaves
+    the startup command as it was. A shell that exits on its own captures nothing. *Leave Running*
+    is not an end, so a busy terminal left running captures nothing yet.
+  - **Limits.** A captured command is one line of at most 2,048 characters with no control
+    characters. Its words are quoted so the shell reads them back unchanged, and it runs on the
+    next cold start exactly as a typed startup command would.
+
+  *Not yet:* Windows (its shells report no running command).
+- **FR-047** Manual reload. `terminal.reloadMode` (Preferences, *Start terminals*) is *automatic* by
+  default.
+  - **Dormant panels.** In *manual* mode, the terminals a saved layout holds when it loads do not
+    start. A terminal still running reattaches as usual. Any other shows a placeholder naming the
+    panel, with a **Reload** button, and holds no shell.
+  - **Reloading.** The panel's tab menu offers *Reload Terminal* in place of *Restart Terminal*.
+    Reloading is an ordinary cold start (FR-046 captures apply).
+  - **What stays automatic.** Terminals made during the session (the picker, a split) start at once.
+    A dormant panel keeps its name, type and place, and stays dormant when its project is switched
+    away and back.
+  - **Changing the mode.** A change applies to layouts loaded after it.
 
 ### Workspace and layout
 
@@ -424,15 +455,14 @@ In rough order of value:
 
 1. **Windows as a first-class target.**
    - Run the daemon and UI tests on Windows (they drive a Unix PTY today).
-   - A live working directory for Windows shells (FR-014).
+   - A live working directory and command memory for Windows shells (FR-014, FR-046).
    - Elevated and de-elevated terminals, and WSL shells.
 2. **Publishing.** An `.msi`, and attaching every package to a GitHub release for a `v*` tag
    (FR-045).
 3. **Sub-workspaces** (FR-021): the single focus group, dragging a tab out to tear it off, and moving
    a panel rather than showing it.
-4. **Terminals:** remembering the last running command, and reloading a terminal by hand.
-5. **Icon packs:** image (SVG) icons (FR-043).
-6. **Markdown previews:** images, scroll sync, and back/forward history (FR-038).
+4. **Icon packs:** image (SVG) icons (FR-043).
+5. **Markdown previews:** images, scroll sync, and back/forward history (FR-038).
 
 ## Done means
 

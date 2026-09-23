@@ -1037,6 +1037,11 @@ impl ThrongApp {
         let (layout, save) = match self.store.layout(id) {
             Ok(LayoutLoad::Loaded(mut layout)) => {
                 let orphans = layout.prune_orphans();
+                // With manual reload, the terminals a saved layout holds wait to be reloaded; one
+                // still running reattaches all the same.
+                if self.settings.manual_reload() {
+                    self.hub.keep_dormant(layout.terminal_panels().map(|(panel, _)| panel.id));
+                }
                 (layout, !orphans.is_empty())
             }
             Ok(LayoutLoad::Missing) => (fresh(), true),
@@ -1108,6 +1113,8 @@ impl ThrongApp {
                 }
             }
         }
+        let queued = self.hub.take_queued();
+        self.hub_events(ctx, queued);
         match self.link.outage() {
             Some(message) => {
                 let mut notice = Notice::new("daemon", Severity::Error, message);
@@ -1145,9 +1152,37 @@ impl ThrongApp {
                 }
                 HubEvent::Clipboard(text) => ctx.copy_text(text),
                 HubEvent::Directory { panel, dir } => self.remember_directory(panel, dir),
+                HubEvent::Observed { panel, running } => {
+                    self.update_terminal(panel, |config| config.observe(running));
+                }
+                HubEvent::Captured(panel) => {
+                    self.update_terminal(panel, TerminalPanelConfig::capture);
+                }
                 HubEvent::Failed { .. } | HubEvent::TitleChanged(_) => {}
             }
         }
+    }
+
+    /// Change a terminal panel's saved configuration wherever its layout is; `change` says whether
+    /// it changed anything, and only then is the layout saved.
+    fn update_terminal(&mut self, panel: PanelId, change: impl FnOnce(&mut TerminalPanelConfig) -> bool) {
+        let Some(ws) = self.workspaces.values_mut().find(|ws| ws.layout.panels.contains_key(&panel)) else {
+            return;
+        };
+        if let Some(PanelKind::Terminal(config)) = ws.layout.panels.get_mut(&panel).map(|r| &mut r.kind)
+            && change(config)
+        {
+            ws.mark_dirty();
+        }
+    }
+
+    /// A terminal the app is about to end: while it remembers commands, what it runs this moment
+    /// becomes its startup command (nothing running leaves that as it was).
+    fn capture_before_ending(&mut self, panel: PanelId, running: Option<Option<String>>) {
+        self.update_terminal(panel, |config| {
+            let observed = running.is_some_and(|now| config.observe(now));
+            config.capture() || observed
+        });
     }
 
     /// A terminal's shell moved: while the panel remembers its directory, keep the new
@@ -1580,6 +1615,7 @@ impl ThrongApp {
                     }
                 }
                 PanelAction::KillTerminal(panel) => {
+                    self.capture_before_ending(panel, self.hub.observe_now(panel));
                     let config = self.terminal_config(pid, panel).unwrap_or_default();
                     self.hub.kill(panel, self.link.client());
                     if let Some(ws) = self.workspaces.get_mut(&pid) {
@@ -2671,19 +2707,33 @@ impl ThrongApp {
         }
         // From here on nothing starts a terminal: the ones quitting closes stay closed.
         self.hub.closing = true;
+        let timeout = Duration::from_secs(3);
+        let list = match self.link.client().map(|c| c.request(Request::List, timeout)) {
+            Some(Ok(Reply::Terminals(list))) => list,
+            _ => Vec::new(),
+        };
+        let live: Vec<_> = list.into_iter().filter(|t| t.exited.is_none()).collect();
+        // Command memory, before anything ends. Busy terminals left running have not ended: their
+        // memory waits for an end. Idle ones close with nothing running.
+        let table = throng_platform::process::ProcessTable::snapshot();
+        for info in &live {
+            let running = match choice {
+                Answer::LeaveRunning if info.busy => continue,
+                Answer::LeaveRunning => Some(None),
+                _ => info.pid.map(|pid| table.running_command(pid)),
+            };
+            self.capture_before_ending(PanelId::from(info.terminal), running);
+        }
         if let Some(client) = self.link.client() {
-            let timeout = Duration::from_secs(3);
-            if let Ok(Reply::Terminals(list)) = client.request(Request::List, timeout) {
-                let ids = list.iter().filter(|t| t.exited.is_none()).map(|t| t.terminal).collect();
-                match choice {
-                    // Idle shells close now and are re-created on reopen; busy ones keep running.
-                    Answer::LeaveRunning => {
-                        let _ = client.request(Request::CloseIdle { terminals: ids }, timeout);
-                    }
-                    _ => {
-                        for terminal in ids {
-                            let _ = client.request(Request::Kill { terminal }, timeout);
-                        }
+            let ids: Vec<_> = live.iter().map(|t| t.terminal).collect();
+            match choice {
+                // Idle shells close now and are re-created on reopen; busy ones keep running.
+                Answer::LeaveRunning => {
+                    let _ = client.request(Request::CloseIdle { terminals: ids }, timeout);
+                }
+                _ => {
+                    for terminal in ids {
+                        let _ = client.request(Request::Kill { terminal }, timeout);
                     }
                 }
             }

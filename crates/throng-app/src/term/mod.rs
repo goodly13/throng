@@ -83,6 +83,9 @@ pub enum Status {
     Exited(ExitStatus),
     /// Could not start; the panel keeps its type so the user can retry.
     Failed(String),
+    /// Not started, by choice: terminals start only when reloaded (`terminal.reloadMode`
+    /// manual). A state, not a failure; it holds no shell.
+    Dormant,
 }
 
 /// What the screen's links depend on: the output seen, the scroll position and the size.
@@ -121,6 +124,8 @@ pub struct TerminalView {
     pub cwd: Option<PathBuf>,
     /// The shell's own directory, read from outside it.
     pub(crate) process_cwd: Option<PathBuf>,
+    /// The shell's pid while it runs, as the daemon last reported it.
+    pub(crate) shell_pid: Option<u32>,
     /// The last directory the shell reported itself.
     reported: Option<PathBuf>,
     /// The colours it is drawn with, for answering colour queries.
@@ -162,6 +167,7 @@ impl TerminalView {
             link_cache: None,
             cwd: None,
             process_cwd: None,
+            shell_pid: None,
             reported: None,
             osc7: osc7::Osc7::default(),
             palette: None,

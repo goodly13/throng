@@ -1248,3 +1248,84 @@ fn a_terminal_synced_into_a_sub_workspace_takes_input_there_and_closing_it_there
     assert!(harness.state().sub_workspaces().is_empty(), "emptied, the sub-workspace went");
     assert_eq!(harness.state().terminal_status(panel), Some(Status::Running));
 }
+
+#[test]
+fn a_terminal_that_remembers_its_command_keeps_what_ran_when_it_was_killed() {
+    let env = Env::new();
+    let root = env.folder("memory");
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout
+            .set_kind(first, terminal(TerminalPanelConfig { remember_command: true, ..Default::default() }));
+    });
+    let mut harness = env.app(None);
+    let panel = first_panel(harness.state());
+    wait(&mut harness, "the shell", |app| app.terminal_status(panel) == Some(Status::Running));
+    let label = "Terminal: Seeded › Tab 1 › Panel 1";
+    harness.get_by_label(label).click();
+    steps(&mut harness, 2);
+    harness.get_by_label(label).type_text("sleep 300");
+    harness.key_press(Key::Enter);
+    let saved = |app: &ThrongApp| match &app.active_layout().unwrap().panels[&panel].kind {
+        PanelKind::Terminal(config) => Some(config.clone()),
+        _ => None,
+    };
+    // Seen running from outside the shell, and kept with the layout in case nobody sees the end.
+    wait(&mut harness, "the command to be seen", |app| {
+        saved(app).and_then(|c| c.running_command).as_deref() == Some("sleep 300")
+    });
+
+    harness.get_by_label("Panel 1").click_secondary();
+    steps(&mut harness, 3);
+    harness.get_by_label("Kill Terminal (keep panel)").click();
+    steps(&mut harness, 3);
+    // The picker offers it back as the startup command, and the choice to remember stays on.
+    harness.get_by_label("Start Terminal").click();
+    steps(&mut harness, 3);
+    let config = saved(harness.state()).expect("a terminal again");
+    assert_eq!(config.startup_command.as_deref(), Some("sleep 300"));
+    assert!(config.remember_command && config.running_command.is_none());
+    wait(&mut harness, "the new shell", |app| app.terminal_status(panel) == Some(Status::Running));
+}
+
+#[test]
+fn with_manual_reload_a_saved_terminal_waits_for_reload_and_a_crash_s_command_comes_back() {
+    let env = Env::new();
+    let root = env.folder("manual");
+    std::fs::create_dir_all(env.dirs.settings_file().parent().unwrap()).unwrap();
+    std::fs::write(env.dirs.settings_file(), r#"{"terminal":{"reloadMode":"manual"}}"#).unwrap();
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        // What a crash leaves: a command seen running, and no end ever seen.
+        let config = TerminalPanelConfig {
+            remember_command: true,
+            running_command: Some("echo remembered-$((6*7))".into()),
+            ..Default::default()
+        };
+        layout.set_kind(first, terminal(config));
+    });
+    let mut harness = env.app(None);
+    let panel = first_panel(harness.state());
+    wait(&mut harness, "the panel to wait", |app| app.terminal_status(panel) == Some(Status::Dormant));
+    harness.get_by_label("\"Seeded › Tab 1 › Panel 1\" is not running.");
+    let listed = env.client().request(Request::List, WAIT).unwrap();
+    assert!(matches!(listed, Reply::Terminals(ref list) if list.is_empty()), "no shell: {listed:?}");
+
+    // The menu says Reload while it waits; the panel's own button does the same.
+    harness.get_by_label("Panel 1").click_secondary();
+    steps(&mut harness, 3);
+    harness.get_by_label("Reload Terminal");
+    harness.key_press(Key::Escape);
+    steps(&mut harness, 2);
+    harness.get_by_label("Reload").click();
+    wait(&mut harness, "the remembered command's output", |app| {
+        text_of(app, panel).contains("remembered-42")
+    });
+    match &harness.state().active_layout().unwrap().panels[&panel].kind {
+        PanelKind::Terminal(config) => {
+            assert_eq!(config.startup_command.as_deref(), Some("echo remembered-$((6*7))"));
+            assert_eq!(config.running_command, None, "the capture is spent");
+        }
+        other => panic!("not a terminal: {other:?}"),
+    }
+}
