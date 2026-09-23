@@ -392,8 +392,16 @@ missing. [Open work](#open-work) collects every gap in one list.
     - `editor.navigationHistorySize` (10) caps the places kept, oldest first and never the
       current one. A lower cap applies at the next step.
     - Places follow a file that is moved or renamed.
-
-  *Not yet:* scroll sync with the editor.
+  - **Scroll sync.** While `editor.previews.syncScroll` is on (the default), a preview and its
+    file's editor in the same window scroll together, both ways.
+    - Scrolling the editor puts the block holding its top line at the top of the preview, part
+      way into the block as the line is part way into it. Scrolling the preview puts the matching
+      source line at the top of the editor.
+    - Following the preview never moves the editor's caret or selection, focuses it, or marks it
+      dirty.
+    - A redrawn preview (the document changed) goes back to where the editor is.
+    - Each side waits for a move it asked for to land rather than answering it, so the two never
+      chase each other. A standalone preview is unaffected.
 
 ### Appearance and configuration
 
@@ -483,7 +491,6 @@ In rough order of value:
 3. **Sub-workspaces** (FR-021): the single focus group, dragging a tab out to tear it off, and moving
    a panel rather than showing it.
 4. **Icon packs:** image (SVG) icons (FR-043).
-5. **Markdown previews:** scroll sync with the editor (FR-038).
 
 ## Done means
 

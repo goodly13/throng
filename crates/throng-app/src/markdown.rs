@@ -72,6 +72,8 @@ pub enum Block {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Document {
     pub blocks: Vec<Block>,
+    /// The source line (0-based) each top-level block starts on, for scroll sync.
+    pub lines: Vec<usize>,
 }
 
 impl Document {
@@ -179,9 +181,23 @@ struct Builder {
     /// Inside `<script>` or `<style>`: everything until this closing tag is dropped.
     skip_until: Option<&'static str>,
     anchors: std::collections::HashMap<String, usize>,
+    /// Where the current top-level construct, and the current paragraph or heading, start (byte
+    /// offsets), and where each top-level block pushed so far started.
+    top_start: usize,
+    inline_start: usize,
+    starts: Vec<usize>,
 }
 
 impl Builder {
+    /// Add a block where blocks go now; a top-level one records where it started.
+    fn push_block(&mut self, block: Block, start: usize) {
+        let top = self.frames.len() == 1 && matches!(self.frames[0], Frame::Blocks(_));
+        self.blocks().push(block);
+        if top {
+            self.starts.push(start);
+        }
+    }
+
     fn style(&self) -> Style {
         self.style.last().copied().unwrap_or_default()
     }
@@ -236,7 +252,7 @@ impl Builder {
         match gather {
             Gather::Paragraph => {
                 if inlines.iter().any(|i| !matches!(i, Inline::Text { text, .. } if text.trim().is_empty())) {
-                    self.blocks().push(Block::Paragraph(inlines));
+                    self.push_block(Block::Paragraph(inlines), self.inline_start);
                 }
             }
             Gather::Heading(level) => {
@@ -246,7 +262,7 @@ impl Builder {
                 let n = self.anchors.entry(base.clone()).or_insert(0);
                 let anchor = if *n == 0 { base.clone() } else { format!("{base}-{n}") };
                 *n += 1;
-                self.blocks().push(Block::Heading { level, inlines, anchor });
+                self.push_block(Block::Heading { level, inlines, anchor }, self.inline_start);
             }
             Gather::Cell => {
                 if let Some(Frame::Table { row, .. }) = self.frames.last_mut() {
@@ -321,9 +337,9 @@ impl Builder {
 
     fn metadata(&mut self, source: String) {
         match front_matter(&source) {
-            Some(pairs) => self.blocks().push(Block::FrontMatter(pairs)),
+            Some(pairs) => self.push_block(Block::FrontMatter(pairs), self.top_start),
             // Not simple YAML: its source as a code block, never a notice.
-            None => self.blocks().push(Block::Code { language: "yaml".into(), text: source }),
+            None => self.push_block(Block::Code { language: "yaml".into(), text: source }, self.top_start),
         }
     }
 }
@@ -436,16 +452,30 @@ pub fn parse(text: &str) -> Document {
         metadata: None,
         skip_until: None,
         anchors: std::collections::HashMap::new(),
+        top_start: 0,
+        inline_start: 0,
+        starts: Vec::new(),
     };
-    for event in Parser::new_ext(text, options) {
+    let mut depth = 0usize;
+    for (event, range) in Parser::new_ext(text, options).into_offset_iter() {
+        if depth == 0 && matches!(event, Event::Start(_) | Event::Rule | Event::Html(_)) {
+            b.top_start = range.start;
+        }
+        match &event {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth = depth.saturating_sub(1),
+            _ => {}
+        }
         match event {
             Event::Start(tag) => match tag {
                 Tag::Paragraph => {
                     b.flush();
+                    b.inline_start = range.start;
                     b.inline = Some((Gather::Paragraph, Vec::new()));
                 }
                 Tag::Heading { level, .. } => {
                     b.flush();
+                    b.inline_start = range.start;
                     b.inline = Some((Gather::Heading(level as u8), Vec::new()));
                 }
                 Tag::BlockQuote(_) => {
@@ -493,7 +523,7 @@ pub fn parse(text: &str) -> Document {
                 TagEnd::BlockQuote(_) => {
                     b.flush();
                     if let Some(Frame::Quote(blocks)) = b.frames.pop() {
-                        b.blocks().push(Block::Quote(blocks));
+                        b.push_block(Block::Quote(blocks), b.top_start);
                     }
                 }
                 TagEnd::CodeBlock => {
@@ -501,13 +531,13 @@ pub fn parse(text: &str) -> Document {
                         if text.ends_with('\n') {
                             text.pop();
                         }
-                        b.blocks().push(Block::Code { language, text });
+                        b.push_block(Block::Code { language, text }, b.top_start);
                     }
                 }
                 TagEnd::List(_) => {
                     b.flush();
                     if let Some(Frame::List { start, items }) = b.frames.pop() {
-                        b.blocks().push(Block::List { start, items });
+                        b.push_block(Block::List { start, items }, b.top_start);
                     }
                 }
                 TagEnd::Item => {
@@ -531,7 +561,7 @@ pub fn parse(text: &str) -> Document {
                 }
                 TagEnd::Table => {
                     if let Some(Frame::Table { head, rows, .. }) = b.frames.pop() {
-                        b.blocks().push(Block::Table { head, rows });
+                        b.push_block(Block::Table { head, rows }, b.top_start);
                     }
                 }
                 TagEnd::Emphasis
@@ -578,7 +608,7 @@ pub fn parse(text: &str) -> Document {
             Event::HardBreak => b.push_inline(Inline::Break),
             Event::Rule => {
                 b.flush();
-                b.blocks().push(Block::Rule);
+                b.push_block(Block::Rule, range.start);
             }
             Event::TaskListMarker(done) => {
                 if let Some(Frame::Item { task, .. }) = b.frames.last_mut() {
@@ -599,10 +629,21 @@ pub fn parse(text: &str) -> Document {
         };
         b.blocks().extend(blocks);
     }
+    let starts = std::mem::take(&mut b.starts);
     match b.frames.pop() {
         Some(Frame::Blocks(mut blocks)) => {
             autolink_blocks(&mut blocks);
-            Document { blocks }
+            // Blocks folded in from a malformed document's open frames start where the last did.
+            let last = starts.last().copied().unwrap_or(0);
+            let line_starts: Vec<usize> =
+                std::iter::once(0).chain(text.match_indices('\n').map(|(i, _)| i + 1)).collect();
+            let lines = (0..blocks.len())
+                .map(|i| {
+                    let at = starts.get(i).copied().unwrap_or(last);
+                    line_starts.partition_point(|&s| s <= at).saturating_sub(1)
+                })
+                .collect();
+            Document { blocks, lines }
         }
         _ => Document::default(),
     }
@@ -758,6 +799,29 @@ mod tests {
                 |i| !matches!(i, Inline::Text { text, link: Some(_), .. } if text.contains("not.linked"))
             )
         );
+    }
+
+    #[test]
+    fn each_top_level_block_knows_the_line_it_starts_on() {
+        let text = "---\ntitle: x\n---\n# Title\n\nA paragraph\nover two lines.\n\n- one\n- two\n\n```\ncode\n```\n\n---\n\n> quote\n";
+        let doc = parse(text);
+        assert_eq!(doc.blocks.len(), doc.lines.len());
+        let kinds: Vec<&str> = doc
+            .blocks
+            .iter()
+            .map(|b| match b {
+                Block::FrontMatter(_) => "front",
+                Block::Heading { .. } => "heading",
+                Block::Paragraph(_) => "para",
+                Block::List { .. } => "list",
+                Block::Code { .. } => "code",
+                Block::Rule => "rule",
+                Block::Quote(_) => "quote",
+                Block::Table { .. } => "table",
+            })
+            .collect();
+        assert_eq!(kinds, ["front", "heading", "para", "list", "code", "rule", "quote"]);
+        assert_eq!(doc.lines, [0, 3, 5, 8, 11, 15, 17]);
     }
 
     #[test]

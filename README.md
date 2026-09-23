@@ -58,7 +58,8 @@ never open a release build's data.
   and terminal output. Ctrl+click (Cmd+click on macOS) follows one, and right-click offers more.
 - **Markdown previews**: choose Open Preview on a `.md` file's editor tab or in the tree. The preview
   sits beside its editor and follows unsaved edits. It draws the project's images (and `https:`
-  ones, which a setting can turn off), and Back and Forward retrace the links you followed.
+  ones, which a setting can turn off), scrolls together with its editor, and Back and Forward
+  retrace the links you followed.
 - **Find in Files** is a panel of its own. Results are grouped by file, and a click opens the file
   at the match. You can also replace across files, after a warning that it cannot be undone.
 - **Sub-workspaces**: right-click a terminal, editor or preview tab → *Sync to Sub-workspace*. The

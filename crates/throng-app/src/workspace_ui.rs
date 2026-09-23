@@ -1308,6 +1308,26 @@ fn preview_ui(ui: &mut Ui, panel: PanelId, config: &PreviewPanelConfig, ctx: &mu
         crate::preview::show(ui, state, &style)
     });
     state.scroll = output.state.offset.y;
+    // Scroll sync with the file's editor in this window, both ways.
+    if ctx.settings.preview_sync_scroll() {
+        let key = Documents::key_for(ctx.rules, path);
+        let (here, pass) = (ui.ctx().viewport_id(), ui.ctx().cumulative_pass_nr());
+        let editor = ctx.docs.get_mut(&key).and_then(|doc| {
+            doc.views
+                .iter_mut()
+                .filter(|(_, v)| v.drawn.is_some_and(|(window, n)| window == here && n + 1 >= pass))
+                .min_by_key(|(id, _)| **id)
+                .map(|(_, v)| v)
+        });
+        if let Some(view) = editor {
+            if let Some(line) = state.sync(view.top_line()) {
+                view.show_line_at_top(line);
+            }
+            if state.settling {
+                ui.ctx().request_repaint();
+            }
+        }
+    }
     for (href, action) in output.inner {
         // A heading in this document is a place of its own; anything else is the app's to follow.
         match href.strip_prefix('#') {

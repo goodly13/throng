@@ -195,6 +195,13 @@ pub const SETTINGS: &[SettingDef] = &[
         kind: SettingKind::Bool { default: true },
     },
     SettingDef {
+        key: "editor.previews.syncScroll",
+        label: "Sync preview and editor scrolling",
+        help: "Scrolling a file's editor scrolls its preview beside it to the same place, and the \
+               other way round.",
+        kind: SettingKind::Bool { default: true },
+    },
+    SettingDef {
         key: "editor.navigationHistorySize",
         label: "Preview history size",
         help: "How many places Back and Forward remember in each preview.",
@@ -597,6 +604,11 @@ impl Settings {
     #[must_use]
     pub fn navigation_history_size(&self) -> usize {
         usize::try_from(self.int("editor.navigationHistorySize")).unwrap_or(10)
+    }
+    /// Whether a preview and its file's editor scroll together.
+    #[must_use]
+    pub fn preview_sync_scroll(&self) -> bool {
+        self.bool("editor.previews.syncScroll")
     }
     /// Whether previews load `https:` images.
     #[must_use]

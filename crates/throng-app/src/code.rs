@@ -153,6 +153,12 @@ pub struct CodeView {
     pub reveal: Option<usize>,
     /// The link the context menu was opened on.
     menu_link: Option<Target>,
+    /// Put this line at the top next frame, leaving the caret where it is (scroll sync).
+    top: Option<usize>,
+    /// A row's height as last drawn.
+    row_h: f32,
+    /// The window it was last drawn in, and on which pass.
+    pub drawn: Option<(egui::ViewportId, u64)>,
 }
 
 /// A selection being made with the mouse.
@@ -198,6 +204,20 @@ impl CodeView {
         self.column = false;
         self.scroll_to_caret = true;
         self.activity = Some(Instant::now());
+    }
+
+    /// The first line in view, as last drawn.
+    pub fn top_line(&mut self) -> Option<usize> {
+        let wrap = self.wrap.as_mut().filter(|_| self.row_h > 0.0)?;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let row = (self.scroll.y / self.row_h).floor().max(0.0) as usize;
+        let row = row.min(wrap.total_rows().saturating_sub(1));
+        Some(wrap.line_at_row(row).0)
+    }
+
+    /// Scroll so `line` is the first in view, leaving the caret and selection where they are.
+    pub fn show_line_at_top(&mut self, line: usize) {
+        self.top = Some(line);
     }
 
     fn touch(&mut self) {
@@ -386,6 +406,8 @@ pub fn show(
         (response, Frame { rows, origin, visible })
     });
     view.scroll = scrolled.state.offset;
+    view.row_h = metrics.row_h;
+    view.drawn = Some((ui.ctx().viewport_id(), ui.ctx().cumulative_pass_nr()));
     let (response, frame) = scrolled.inner;
     if response.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::Text);
@@ -457,6 +479,12 @@ fn scroll_target(
     let mut target = view.scroll;
     let revealing = view.reveal.take();
     let caret = std::mem::take(&mut view.scroll_to_caret);
+    let top = view.top.take();
+    if let Some(line) = top.filter(|_| revealing.is_none() && !caret) {
+        let last = buf.rope().len_lines().saturating_sub(1);
+        target.y = wrap.first_row_of(line.min(last)) as f32 * metrics.row_h;
+        return Some(target);
+    }
     let pos = revealing.or_else(|| caret.then(|| view.selection.primary().head))?;
     let (row, col) = wrap.locate(buf.rope(), pos.min(buf.len_chars()));
     let (y, x) = (row as f32 * metrics.row_h, col as f32 * metrics.char_w + PAD_X);
