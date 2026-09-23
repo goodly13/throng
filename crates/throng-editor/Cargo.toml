@@ -1,0 +1,21 @@
+[package]
+name = "throng-editor"
+description = "The text model behind throng's editor: buffer, selections, undo history, find, wrapping, highlighting."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ropey.workspace = true
+serde.workspace = true
+unicode-width.workspace = true
+syntect.workspace = true
+two-face.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

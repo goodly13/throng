@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=throng
+GenericName=Terminal and Editor Workspace
+Comment=Project-first terminal and agent workspace
+Exec=throng %f
+Icon=throng
+Terminal=false
+Categories=Development;TerminalEmulator;
+Keywords=terminal;shell;editor;project;
+StartupWMClass=throng
+StartupNotify=true

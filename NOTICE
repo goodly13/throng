@@ -1,0 +1,19 @@
+throng
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU Affero General Public License as published by the Free Software Foundation, version 3 only.
+See LICENSE for the full text.
+
+This is a modified work. It is a Rust reimplementation derived from "throng" by Christopher Sebok
+(Copyright (C) 2026 Christopher Sebok), which was released under the GNU Affero General Public
+License v3.0. The original was a TypeScript/Electron application. This version rewrites it and
+carries over its behavioural requirements, built-in theme palettes and theme derivation, default key
+bindings, icon tokens, and the formats of its settings, theme, key binding and icon pack files.
+
+Changes relative to the original, made from September 2026, in summary:
+- the whole application was reimplemented in Rust, with a native user interface (egui) in place
+  of Electron;
+- Linux and macOS were added as supported platforms;
+- the terminal daemon, persistence, editor and terminal emulator integration were rebuilt;
+- the defects found in an audit of the original were designed out.
+Every change since is recorded in this repository's version control.

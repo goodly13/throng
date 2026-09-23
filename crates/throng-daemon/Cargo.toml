@@ -1,0 +1,29 @@
+[package]
+name = "throng-daemon"
+description = "throng's detached terminal daemon: owns PTYs so terminals outlive the UI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+throng-core.workspace = true
+throng-platform.workspace = true
+throng-protocol.workspace = true
+portable-pty.workspace = true
+interprocess.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
