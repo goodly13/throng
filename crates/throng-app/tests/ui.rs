@@ -1393,3 +1393,54 @@ fn a_preview_draws_the_projects_images_and_shows_alt_text_for_what_it_may_not_lo
     harness.get_by_label("[kept out]");
     harness.get_by_label("[plain web]");
 }
+
+#[test]
+fn a_preview_and_its_editor_scroll_together_both_ways() {
+    let env = Env::new();
+    let text: String = (1..=120).map(|i| format!("## Section {i}\n\nText for section {i}.\n\n")).collect();
+    let (_file, mut harness, editor) = editor_on(&env, "long.md", &text);
+    harness.get_by_label("long.md").click_secondary();
+    steps(&mut harness, 3);
+    harness.get_by_label("Open Preview").click();
+    steps(&mut harness, 6);
+    let preview = harness
+        .state()
+        .active_layout()
+        .unwrap()
+        .panels
+        .values()
+        .find(|p| matches!(p.kind, PanelKind::Preview(_)))
+        .map(|p| p.id)
+        .expect("a preview");
+    let close = |a: usize, b: usize| a.abs_diff(b) <= 4;
+
+    // The editor goes down the file: the preview follows it to the same section.
+    harness.get_by_role(egui::accesskit::Role::MultilineTextInput).focus();
+    steps(&mut harness, 2);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::G);
+    steps(&mut harness, 2);
+    harness.get_by_role(egui::accesskit::Role::TextInput).type_text("300");
+    steps(&mut harness, 1);
+    harness.key_press(Key::Enter);
+    steps(&mut harness, 6);
+    let top = harness.state_mut().editor_top_line(editor).expect("the editor's top line");
+    assert!(top > 200, "the editor moved: {top}");
+    let (offset, line) = harness.state().preview_position(preview).unwrap();
+    assert!(offset > 0.0 && line.is_some_and(|l| close(l, top)), "preview at {line:?} for editor {top}");
+
+    // The reader scrolls the preview back up: the editor follows it.
+    let over = harness.get_by_label("long.md - Preview").rect().center() + egui::vec2(0.0, 200.0);
+    harness.event(egui::Event::PointerMoved(over));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, 2400.0),
+        modifiers: Modifiers::NONE,
+        phase: egui::TouchPhase::Move,
+    });
+    steps(&mut harness, 8);
+    let (_, line) = harness.state().preview_position(preview).unwrap();
+    let line = line.expect("the preview's top line");
+    let top = harness.state_mut().editor_top_line(editor).unwrap();
+    assert!(top < 200, "the editor followed the preview up: {top}");
+    assert!(close(line, top), "editor at {top} for preview {line}");
+}

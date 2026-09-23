@@ -61,6 +61,15 @@ pub struct PreviewState {
     pub restore: Option<f32>,
     /// It has the keyboard: pressed in last (see the preview panel).
     pub has_keys: bool,
+    /// Where each top-level block was drawn, from the top of the document, last frame.
+    pub block_tops: Vec<f32>,
+    /// Scroll sync's memory: the editor top line and the preview offset last matched, the
+    /// showing they were matched on, and a move this side asked for that has yet to land.
+    pub synced_line: Option<usize>,
+    pub synced_offset: f32,
+    synced_showing: u64,
+    showing: u64,
+    pub settling: bool,
     code: Vec<CodeCache>,
     theme_key: usize,
     /// Each image source's loadable address, or `None` when it stays alt text: worked out once per
@@ -83,6 +92,12 @@ impl PreviewState {
             scroll: 0.0,
             restore: None,
             has_keys: false,
+            block_tops: Vec::new(),
+            synced_line: None,
+            synced_offset: 0.0,
+            synced_showing: 0,
+            showing: 0,
+            settling: false,
             code: Vec::new(),
             theme_key: 0,
             images: HashMap::new(),
@@ -91,6 +106,7 @@ impl PreviewState {
 
     fn show_text(&mut self, text: &str, shown: Shown) {
         self.document = Some(markdown::parse(text));
+        self.showing += 1;
         self.images.clear();
         self.shown = Some(shown);
         self.pending = None;
@@ -250,8 +266,90 @@ pub fn show(ui: &mut Ui, state: &mut PreviewState, style: &PreviewStyle) -> Vec<
         links: Vec::new(),
     };
     ui.spacing_mut().item_spacing.y = 6.0;
-    render.blocks(ui, &document.blocks);
-    render.links
+    let origin = ui.min_rect().top();
+    let mut tops = Vec::with_capacity(document.blocks.len());
+    for block in &document.blocks {
+        tops.push(ui.cursor().top() - origin);
+        render.block(ui, block);
+    }
+    let links = render.links;
+    state.block_tops = tops;
+    links
+}
+
+/// Where a preview scrolls to put source line `line` at its top: the block starting at or before
+/// it, and the way through that block the line is.
+#[must_use]
+pub fn offset_for_line(lines: &[usize], tops: &[f32], line: usize) -> Option<f32> {
+    let n = lines.len().min(tops.len());
+    let i = lines[..n].partition_point(|&l| l <= line).checked_sub(1)?;
+    let (from, top) = (lines[i], tops[i]);
+    let Some((&next_line, &next_top)) = lines.get(i + 1).zip(tops.get(i + 1)).filter(|_| i + 1 < n) else {
+        return Some(top);
+    };
+    let span = next_line.saturating_sub(from).max(1) as f32;
+    Some(top + (next_top - top) * ((line - from) as f32 / span).min(1.0))
+}
+
+/// The source line at a preview offset: the inverse of [`offset_for_line`].
+#[must_use]
+pub fn line_for_offset(lines: &[usize], tops: &[f32], offset: f32) -> Option<usize> {
+    let n = lines.len().min(tops.len());
+    let i = tops[..n].partition_point(|&t| t <= offset).max(1) - 1;
+    let (&from, &top) = lines.get(i).zip(tops.get(i))?;
+    let Some((&next_line, &next_top)) = lines.get(i + 1).zip(tops.get(i + 1)).filter(|_| i + 1 < n) else {
+        return Some(from);
+    };
+    let height = (next_top - top).max(1.0);
+    let through = ((offset - top) / height).clamp(0.0, 1.0);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+    let lines_in = (through * next_line.saturating_sub(from) as f32).floor() as usize;
+    Some(from + lines_in)
+}
+
+impl PreviewState {
+    /// Keep this preview and the editor beside it on the same place, both ways. `editor_top` is
+    /// the editor's first line in view; the answer is the line to put the editor at, when the
+    /// preview was the one that moved. The side that moved leads; a move this side asked for is
+    /// waited for rather than answered, so the two never chase each other.
+    pub fn sync(&mut self, editor_top: Option<usize>) -> Option<usize> {
+        let lines = self.document.as_ref().map(|d| d.lines.clone()).unwrap_or_default();
+        if lines.is_empty() || self.block_tops.is_empty() {
+            return None;
+        }
+        if self.settling {
+            // What was asked for has been drawn: take both sides as they now stand.
+            self.settling = false;
+            self.synced_line = editor_top;
+            self.synced_offset = self.scroll;
+            return None;
+        }
+        let redrawn = self.synced_showing != self.showing;
+        let editor_moved = editor_top.is_some() && editor_top != self.synced_line;
+        if let Some(top) = editor_top.filter(|_| editor_moved || redrawn) {
+            // The editor moved (or the preview was drawn anew): the preview follows it.
+            self.synced_showing = self.showing;
+            self.synced_line = Some(top);
+            if let Some(offset) = offset_for_line(&lines, &self.block_tops, top)
+                && (offset - self.scroll).abs() > 0.5
+            {
+                self.restore = Some(offset);
+                self.settling = true;
+            }
+            return None;
+        }
+        if (self.scroll - self.synced_offset).abs() > 0.5 {
+            // The reader scrolled the preview: the editor follows it.
+            self.synced_offset = self.scroll;
+            let line = line_for_offset(&lines, &self.block_tops, self.scroll)?;
+            if Some(line) != editor_top {
+                self.synced_line = Some(line);
+                self.settling = true;
+                return Some(line);
+            }
+        }
+        None
+    }
 }
 
 impl Render<'_> {
@@ -556,6 +654,41 @@ fn highlight(text: &str, language: &str, size: f32, theme: &Arc<Theme>, plain: C
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lines_and_offsets_map_through_the_blocks_both_ways() {
+        let lines = [0, 4, 10];
+        let tops = [0.0, 100.0, 400.0];
+        assert_eq!(offset_for_line(&lines, &tops, 0), Some(0.0));
+        assert_eq!(offset_for_line(&lines, &tops, 2), Some(50.0), "half way through the first block");
+        assert_eq!(offset_for_line(&lines, &tops, 7), Some(250.0));
+        assert_eq!(offset_for_line(&lines, &tops, 99), Some(400.0), "the last block's top");
+        assert_eq!(line_for_offset(&lines, &tops, 0.0), Some(0));
+        assert_eq!(line_for_offset(&lines, &tops, 50.0), Some(2));
+        assert_eq!(line_for_offset(&lines, &tops, 250.0), Some(7));
+        assert_eq!(line_for_offset(&lines, &tops, 900.0), Some(10));
+        assert_eq!(offset_for_line(&[], &[], 3), None);
+        assert_eq!(line_for_offset(&[], &[], 3.0), None);
+    }
+
+    #[test]
+    fn sync_follows_whichever_side_moved_and_waits_for_its_own_moves_to_land() {
+        let mut state = PreviewState::new(PathBuf::from("/a.md"), None);
+        state.show_text("# A\n\none\n\ntwo\n\n# B\n", Shown::Disk(None));
+        state.block_tops = vec![0.0, 40.0, 80.0, 120.0];
+        assert_eq!(state.document.as_ref().unwrap().lines, [0, 2, 4, 6]);
+        // The editor scrolled to line 4: the preview goes to that block, and nothing answers back.
+        assert_eq!(state.sync(Some(4)), None);
+        assert_eq!(state.restore, Some(80.0));
+        state.scroll = state.restore.take().unwrap();
+        assert_eq!(state.sync(Some(4)), None, "our own move landing");
+        assert_eq!(state.sync(Some(4)), None, "still");
+        // The reader scrolled the preview to the last block: the editor goes to its line.
+        state.scroll = 120.0;
+        assert_eq!(state.sync(Some(4)), Some(6));
+        assert_eq!(state.sync(Some(6)), None, "the editor's move landing");
+        assert!(state.restore.is_none());
+    }
 
     #[test]
     fn images_load_from_inside_the_project_and_https_only_while_remote_images_are_on() {

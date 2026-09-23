@@ -441,6 +441,23 @@ impl ThrongApp {
         self.workspaces.get(&self.book.active_id()?).map(|ws| &ws.layout)
     }
 
+    /// How far down a preview panel is scrolled, and the source line at its top.
+    #[must_use]
+    pub fn preview_position(&self, panel: PanelId) -> Option<(f32, Option<usize>)> {
+        let state = self.previews.get(&panel)?;
+        let lines = state.document.as_ref().map(|d| d.lines.as_slice()).unwrap_or_default();
+        Some((state.scroll, crate::preview::line_for_offset(lines, &state.block_tops, state.scroll)))
+    }
+
+    /// The first line in view in an editor panel.
+    #[must_use]
+    pub fn editor_top_line(&mut self, panel: PanelId) -> Option<usize> {
+        self.docs
+            .iter_mut()
+            .find_map(|(_, doc)| doc.views.get_mut(&panel))
+            .and_then(crate::code::CodeView::top_line)
+    }
+
     /// The text a terminal panel shows (scrollback and screen).
     #[must_use]
     pub fn terminal_text(&self, panel: PanelId) -> Option<String> {
