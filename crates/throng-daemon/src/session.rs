@@ -17,6 +17,10 @@ use throng_protocol::{ServerMsg, Snapshot, SpawnSpec, TerminalInfo};
 use crate::pty_host::{self, Start};
 use crate::registry::{ClientId, Registry};
 
+/// A cursor position request (DSR 6), and its answer for row 1, column 1.
+const CURSOR_QUERY: &[u8] = b"\x1b[6n";
+const CURSOR_AT_TOP_LEFT: &[u8] = b"\x1b[1;1R";
+
 /// Retained output per session.
 pub const DEFAULT_TAIL_BYTES: usize = 4 * 1024 * 1024;
 
@@ -262,6 +266,11 @@ impl Session {
 
     fn pump_output(&self, mut reader: Box<dyn Read + Send>, registry: &Registry) {
         let mut buf = vec![0u8; 64 * 1024];
+        // A Windows pseudo console opens by asking where the cursor is, and waits for the answer
+        // before the shell can write anything (portable-pty asks it to inherit the cursor). The
+        // daemon answers: no view may be attached to answer it, and a view replaying it from the
+        // tail rightly never does. A fresh terminal's cursor is at the top left.
+        let mut first = cfg!(windows);
         loop {
             let n = match reader.read(&mut buf) {
                 Ok(0) => break,
@@ -269,7 +278,16 @@ impl Session {
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
             };
-            let chunk = &buf[..n];
+            let mut chunk = &buf[..n];
+            if std::mem::take(&mut first)
+                && let Some(rest) = chunk.strip_prefix(CURSOR_QUERY)
+            {
+                let _ = self.writer.lock().write_all(CURSOR_AT_TOP_LEFT);
+                chunk = rest;
+                if chunk.is_empty() {
+                    continue;
+                }
+            }
             let startup = {
                 let mut state = self.state.lock();
                 let offset = state.end_offset;

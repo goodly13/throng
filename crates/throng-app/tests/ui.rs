@@ -1172,7 +1172,7 @@ fn an_icon_pack_draws_the_tree_and_what_it_cannot_draw_keeps_throngs_icon() {
     let detail = notice.and_then(|n| n.detail).unwrap_or_default();
     assert!(detail.contains("refresh") && detail.contains("newFile"), "{detail}");
     assert!(detail.contains("dismiss") && !detail.contains("newFolder"), "{detail}");
-    let uri = format!("file://{}", std::fs::canonicalize(pack.join("img/plus.svg")).unwrap().display());
+    let uri = throng_app::preview::file_uri(&std::fs::canonicalize(pack.join("img/plus.svg")).unwrap());
     let deadline = Instant::now() + WAIT;
     loop {
         harness.step();
@@ -1408,7 +1408,7 @@ fn a_preview_draws_the_projects_images_and_shows_alt_text_for_what_it_may_not_lo
         layout.set_kind(first, PanelKind::Preview(PreviewPanelConfig::new(readme.clone())));
     });
     let mut harness = env.app(None);
-    let uri = format!("file://{}", std::fs::canonicalize(root.join("img/chart.png")).unwrap().display());
+    let uri = throng_app::preview::file_uri(&std::fs::canonicalize(root.join("img/chart.png")).unwrap());
     let deadline = Instant::now() + WAIT;
     loop {
         harness.step();
@@ -1560,8 +1560,10 @@ fn an_elevated_throng_keeps_administrator_rights_only_for_a_terminal_that_asks()
     }
     let env = Env::new();
     let root = env.folder("rights");
-    // One field per line, so a SID is never wrapped across two rows.
-    let groups = || Some("whoami /groups /fo list".to_owned());
+    // One field per line, so a SID is never wrapped across two rows. By its full path: a `whoami`
+    // earlier on PATH (Git's, on CI) is another program.
+    let system = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let groups = || Some(format!(r"{system}\System32\whoami.exe /groups /fo list"));
     let mut admin = None;
     env.seed(&root, |project, layout| {
         let first = layout.tabs[0].root.panels()[0];
