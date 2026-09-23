@@ -4,9 +4,9 @@ A project-first terminal and editor workspace, written in Rust. Each project kee
 editors and file tree together, and terminals keep running when the window closes.
 
 throng is a single `throng` binary. It draws its own UI with egui and hands its terminals to a
-detached daemon (`throng daemon`), which it starts automatically. Linux and macOS are the main
-targets. Windows builds, runs, is packaged and passes its unit tests in CI. Its daemon and UI tests
-still drive a Unix PTY, so they run on Linux and macOS only.
+detached daemon (`throng daemon`), which it starts automatically. It runs on Linux, macOS and
+Windows, and each is built, tested and packaged in CI. The UI tests that type POSIX shell commands
+into a terminal run on Linux and macOS; the rest of the daemon and UI tests run on all three.
 
 What the app must do is written down in [`docs/spec.md`](docs/spec.md).
 

@@ -91,6 +91,7 @@ fn send<T: Serialize>(sink: &Sink, message: &T) -> bool {
 /// Be a host on this process's standard input and output. Returns the process's exit code.
 #[must_use]
 pub fn run() -> i32 {
+    throng_platform::process::let_children_be_interrupted();
     serve(io::stdin(), io::stdout())
 }
 

@@ -15,8 +15,8 @@ missing. [Open work](#open-work) collects every gap in one list.
   Project roots are exclusive: no two roots are equal, and none contains another.
 - **II. A platform-agnostic core.** Domain rules (`throng-core`) never call the operating system.
   Anything that differs by OS sits behind `throng-platform`, which picks rules per platform (path
-  identity, file-name validity, process trees) as values, not scattered `cfg!`s. Linux and macOS
-  come first, and Windows must always build.
+  identity, file-name validity, process trees) as values, not scattered `cfg!`s. Linux, macOS and
+  Windows are all first-class: each is built, tested and packaged on every change.
 - **III. Terminals are detached, tagged and persistent.** A daemon owns every PTY. Closing the UI
   never kills a busy terminal without asking. No process a terminal started may outlive it. A
   terminal that fails keeps its last screen readable.
@@ -105,6 +105,14 @@ missing. [Open work](#open-work) collects every gap in one list.
   Linux, it MUST also end every process in the terminal's session. On Windows, each shell MUST be
   adopted into a job object that ends its processes when the job closes, so a daemon that goes
   takes its terminals' commands with it. No process a terminal started may outlive it.
+  - Killing frees the terminal's id at once: its views are told it ended, and a terminal started
+    in the same panel never meets the one still dying. The daemon still waits for it to go.
+  - Ctrl+C typed in a terminal MUST reach the program there. On Windows the daemon and the PTY host
+    restore Ctrl+C processing before starting shells: a process started in a new process group
+    ignores Ctrl+C, and passes that on to everything it starts.
+  - A Windows pseudo console opens by asking where the cursor is and waits for the answer. The
+    daemon answers it (row 1, column 1) and keeps it out of the output, so a terminal nobody is
+    watching still starts.
 - **FR-009** A startup command MUST run once, after the shell's first output, on a cold start
   only, never on reattach. The shell's environment MUST come from the UI at spawn time, with
   `THRONG_*` removed.
@@ -525,10 +533,7 @@ missing. [Open work](#open-work) collects every gap in one list.
 
 ## Open work
 
-In rough order of value:
-
-1. **Windows as a first-class target.**
-   - Run the daemon and UI tests on Windows (they drive a Unix PTY today).
+Nothing is open. New work starts here as a requirement.
 
 ## Done means
 

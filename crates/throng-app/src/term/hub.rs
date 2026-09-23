@@ -92,6 +92,9 @@ pub struct TerminalHub {
     queued: Vec<HubEvent>,
     /// throng runs as administrator (Windows), so a terminal may keep those rights.
     pub elevated: bool,
+    /// Panels whose terminal the UI killed, until the daemon reports that end. A new terminal may
+    /// start in the panel first, and the old end must not be taken for its.
+    killed: HashSet<PanelId>,
 }
 
 impl TerminalHub {
@@ -192,6 +195,7 @@ impl TerminalHub {
         if let Some(client) = client {
             client.post(Request::Kill { terminal: panel.into() });
         }
+        self.killed.insert(panel);
         self.views.remove(&panel);
         self.plans.remove(&panel);
     }
@@ -291,7 +295,10 @@ impl TerminalHub {
                 }
             }
             ClientEvent::Exited { terminal, status } => {
-                self.exited(terminal.into(), status, client, &mut out)
+                let panel = PanelId::from(terminal);
+                if !(status.user_killed && self.killed.remove(&panel)) {
+                    self.exited(panel, status, client, &mut out);
+                }
             }
             ClientEvent::Resync { terminal } => {
                 let panel = PanelId::from(terminal);
@@ -454,6 +461,29 @@ mod tests {
         let status = ExitStatus { code: None, user_killed: true };
         let events = hub.on_daemon_event(ClientEvent::Exited { terminal: panel.into(), status }, None);
         assert!(events.is_empty(), "{events:?}");
+    }
+
+    #[test]
+    fn a_new_terminal_in_a_killed_panel_outlives_the_old_ones_end() {
+        let mut hub = TerminalHub::new(Vec::new(), None, 1000);
+        let panel = PanelId::new();
+        let plan = || SpawnPlan {
+            project: ProjectId::new(),
+            label: "p".into(),
+            root: PathBuf::from("/"),
+            config: TerminalPanelConfig::default(),
+        };
+        hub.prepare(panel, plan());
+        hub.kill(panel, None);
+        // The user starts a terminal there again before the old one's end arrives.
+        hub.prepare(panel, plan());
+        let status = ExitStatus { code: None, user_killed: true };
+        let events = hub.on_daemon_event(ClientEvent::Exited { terminal: panel.into(), status }, None);
+        assert!(events.is_empty(), "{events:?}");
+        assert!(hub.views.contains_key(&panel), "the new terminal's view stays");
+        // Its own end, later, is its own.
+        let events = hub.on_daemon_event(ClientEvent::Exited { terminal: panel.into(), status }, None);
+        assert!(matches!(events.as_slice(), [HubEvent::Ended { .. }]), "{events:?}");
     }
 
     #[test]

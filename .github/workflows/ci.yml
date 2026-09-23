@@ -1,8 +1,7 @@
 name: CI
 
-# fmt, clippy with warnings denied, and every test, on Linux, macOS and Windows; then a headless
-# launch of the real binary on Linux. Linux and macOS are the first-class targets; Windows is built
-# and tested too so nothing forecloses it (Principle II).
+# fmt, clippy with warnings denied, and every test, on Linux, macOS and Windows (all three are
+# first-class, Principle II); then a headless launch of the real binary on Linux.
 
 on:
   push:

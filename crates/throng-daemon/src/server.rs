@@ -69,6 +69,9 @@ struct Daemon {
     endpoint: Endpoint,
     registry: Arc<Registry>,
     sessions: Mutex<HashMap<TerminalId, Arc<Session>>>,
+    /// Sessions ended at the user's request whose processes may not have gone yet. Their ids are
+    /// free for new sessions; the daemon still waits for them before going idle or stopping.
+    ending: Mutex<Vec<Arc<Session>>>,
     stopping: AtomicBool,
     /// This daemon is elevated and can start a terminal without its rights.
     deelevates: bool,
@@ -77,6 +80,8 @@ struct Daemon {
 /// Run the daemon until it is told to stop or goes idle. Blocks.
 pub fn run(config: DaemonConfig) -> Result<(), RunError> {
     config.dirs.ensure()?;
+    // Ctrl+C typed in a terminal must reach the program running there.
+    throng_platform::process::let_children_be_interrupted();
     let mut lock =
         File::options().create(true).truncate(false).write(true).open(config.dirs.daemon_lock())?;
     match lock.try_lock() {
@@ -98,6 +103,7 @@ pub fn run(config: DaemonConfig) -> Result<(), RunError> {
         endpoint: endpoint.clone(),
         registry: Arc::new(Registry::default()),
         sessions: Mutex::new(HashMap::new()),
+        ending: Mutex::new(Vec::new()),
         stopping: AtomicBool::new(false),
     });
 
@@ -141,7 +147,9 @@ pub fn run(config: DaemonConfig) -> Result<(), RunError> {
 
 impl Daemon {
     fn live_sessions(&self) -> usize {
-        self.sessions.lock().values().filter(|s| !s.is_exited()).count()
+        let mut ending = self.ending.lock();
+        ending.retain(|s| !s.is_exited());
+        self.sessions.lock().values().filter(|s| !s.is_exited()).count() + ending.len()
     }
 
     fn watch_idle(&self) {
@@ -179,7 +187,8 @@ impl Daemon {
 
     /// Kill every live session and wait (bounded) for each to be reaped.
     fn end_all_sessions(&self) {
-        let sessions: Vec<Arc<Session>> = self.sessions.lock().values().cloned().collect();
+        let mut sessions: Vec<Arc<Session>> = self.sessions.lock().values().cloned().collect();
+        sessions.extend(self.ending.lock().iter().cloned());
         for session in &sessions {
             session.kill();
         }
@@ -330,8 +339,12 @@ impl Daemon {
                 Some(Ok(Reply::Ok))
             }
             Request::Kill { terminal } => {
-                if let Some(session) = session(terminal) {
-                    session.kill();
+                // The id is free at once, for the terminal the user starts in its place: a new
+                // session must never attach to, or be refused by, the one still dying.
+                let removed = self.sessions.lock().remove(&terminal);
+                if let Some(session) = removed {
+                    session.end(&self.registry);
+                    self.ending.lock().push(session);
                 }
                 Some(Ok(Reply::Ok))
             }
