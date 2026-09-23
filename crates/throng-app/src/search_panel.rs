@@ -205,7 +205,7 @@ pub fn show(
     egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 6)).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            let glyph = crate::icons::glyph(ui.ctx(), if config.replace { "chevronOpen" } else { "chevron" });
+            let glyph = crate::icons::atom(ui.ctx(), if config.replace { "chevronOpen" } else { "chevron" });
             let toggle = ui.small_button(glyph).on_hover_text(if config.replace {
                 "Hide replace"
             } else {
@@ -363,12 +363,20 @@ pub fn show(
                     Row::Folder(ref dir) => {
                         let key = format!("dir:{dir}");
                         let open = !state.collapsed.contains(&key);
-                        let label = format!(
-                            "{} {}",
-                            crate::icons::glyph(ui.ctx(), if open { "chevronOpen" } else { "chevron" }),
-                            if dir.is_empty() { "(project root)" } else { dir }
+                        let chevron = crate::icons::atom_with(
+                            ui.ctx(),
+                            if open { "chevronOpen" } else { "chevron" },
+                            RichText::strong,
                         );
-                        if ui.add(egui::Button::new(RichText::new(label).strong()).frame(false)).clicked() {
+                        let name = if dir.is_empty() { "(project root)" } else { dir };
+                        let token = if open { "chevronOpen" } else { "chevron" };
+                        let spoken = format!("{} {name}", crate::icons::glyph(ui.ctx(), token));
+                        let label = (chevron, RichText::new(format!(" {name}")).strong());
+                        let response = ui.add(egui::Button::new(label).frame(false));
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &spoken)
+                        });
+                        if response.clicked() {
                             toggle = Some(key);
                         }
                     }
@@ -381,11 +389,19 @@ pub fn show(
                             } else {
                                 &file.rel
                             };
-                            let chevron =
-                                crate::icons::glyph(ui.ctx(), if open { "chevronOpen" } else { "chevron" });
-                            let label = format!("{chevron} {shown}");
-                            if ui.add(egui::Button::new(RichText::new(label).strong()).frame(false)).clicked()
-                            {
+                            let chevron = crate::icons::atom_with(
+                                ui.ctx(),
+                                if open { "chevronOpen" } else { "chevron" },
+                                RichText::strong,
+                            );
+                            let token = if open { "chevronOpen" } else { "chevron" };
+                            let spoken = format!("{} {shown}", crate::icons::glyph(ui.ctx(), token));
+                            let label = (chevron, RichText::new(format!(" {shown}")).strong());
+                            let response = ui.add(egui::Button::new(label).frame(false));
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &spoken)
+                            });
+                            if response.clicked() {
                                 toggle = Some(file.rel.clone());
                             }
                             ui.weak(format!("({})", grouped(file.matches.len())));

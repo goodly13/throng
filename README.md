@@ -79,9 +79,10 @@ never open a release build's data.
   - The terminal's own chords (Ctrl+C, D, Z, A, E, W, U, K, R, L, Q) are never given to a command
     that is live in terminals.
 - **Icon packs**: put a `pack.json` in a folder under `<config>/icon-packs`, for example
-  `{"name": …, "tokens": {"folder": "📁"}}`, then choose the pack under Settings → Icon pack. It
-  replaces the glyphs in the tree and toolbars. Anything the pack leaves out, or that the fonts
-  cannot draw, keeps throng's own glyph.
+  `{"name": …, "tokens": {"folder": "📁", "refresh": "spin.svg"}}`, then choose the pack under
+  Settings → Icon pack. It replaces the icons in the tree and toolbars, with glyphs or with SVG and
+  PNG files kept in the pack's folder. Anything the pack leaves out, or that cannot be drawn, keeps
+  throng's own glyph.
 
 `<config>` is the settings folder from the table above (`throng-dev` for a debug build,
 `$THRONG_HOME/config` when that is set). Preferences shows it.

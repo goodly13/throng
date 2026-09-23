@@ -1340,11 +1340,16 @@ impl ThrongApp {
         let set = if wanted.is_empty() {
             throng_core::icons::IconSet::default()
         } else if let Some(pack) = self.icon_packs.iter().find(|p| p.name.eq_ignore_ascii_case(&wanted)) {
-            let (set, kept) =
-                throng_core::icons::IconSet::with_pack(pack, |g| crate::icons::drawable(ctx, g));
+            let folder = self.icon_packs_dir().join(&pack.name);
+            let (set, kept) = throng_core::icons::IconSet::with_pack(
+                pack,
+                |g| crate::icons::drawable(ctx, g),
+                |written| crate::icons::pack_image(&folder, written),
+            );
             if !kept.is_empty() {
                 problems.push(format!(
-                    "{}: {} kept throng's icon (an image, or a glyph the fonts cannot draw).",
+                    "{}: {} kept throng's icon (a glyph the fonts cannot draw, or an image that is \
+                     missing, outside the pack, too large, or not SVG or PNG).",
                     pack.name,
                     kept.join(", ")
                 ));
@@ -3048,7 +3053,7 @@ impl ThrongApp {
             ui.strong("PROJECTS");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .small_button(crate::icons::glyph(ui.ctx(), "add"))
+                    .small_button(crate::icons::atom(ui.ctx(), "add"))
                     .on_hover_text(hint(ui.ctx(), "New project", "project.new"))
                     .clicked()
                 {
@@ -3202,21 +3207,21 @@ impl ThrongApp {
                 }
                 if let Some(explorer) = self.explorers.get_mut(&project.id) {
                     if ui
-                        .small_button(crate::icons::glyph(ui.ctx(), "refresh"))
+                        .small_button(crate::icons::atom(ui.ctx(), "refresh"))
                         .on_hover_text("Refresh")
                         .clicked()
                     {
                         explorer.invalidate_all();
                     }
                     if ui
-                        .small_button(crate::icons::glyph(ui.ctx(), "newFolder"))
+                        .small_button(crate::icons::atom(ui.ctx(), "newFolder"))
                         .on_hover_text("New folder")
                         .clicked()
                     {
                         explorer.begin_create(project.root.clone(), true);
                     }
                     if ui
-                        .small_button(crate::icons::glyph(ui.ctx(), "newFile"))
+                        .small_button(crate::icons::atom(ui.ctx(), "newFile"))
                         .on_hover_text("New file")
                         .clicked()
                     {
@@ -3310,7 +3315,7 @@ impl ThrongApp {
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
-                                .small_button(crate::icons::glyph(ui.ctx(), "dismiss"))
+                                .small_button(crate::icons::atom(ui.ctx(), "dismiss"))
                                 .on_hover_text("Dismiss")
                                 .clicked()
                             {

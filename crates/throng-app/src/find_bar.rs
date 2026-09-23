@@ -101,7 +101,7 @@ pub fn show(ui: &mut Ui, bar: Bar<'_>) -> BarOut {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 if let Some((_, open)) = replace.as_mut() {
-                    let glyph = crate::icons::glyph(ui.ctx(), if **open { "chevronOpen" } else { "chevron" });
+                    let glyph = crate::icons::atom(ui.ctx(), if **open { "chevronOpen" } else { "chevron" });
                     let hint = if **open {
                         "Hide replace".to_owned()
                     } else {
@@ -175,7 +175,7 @@ pub fn show(ui: &mut Ui, bar: Bar<'_>) -> BarOut {
                 let previous = named(
                     ui.add_enabled(
                         total > 0,
-                        egui::Button::new(crate::icons::glyph(ui.ctx(), "findPrevious")).small(),
+                        egui::Button::new(crate::icons::atom(ui.ctx(), "findPrevious")).small(),
                     ),
                     "Previous match",
                     None,
@@ -186,7 +186,7 @@ pub fn show(ui: &mut Ui, bar: Bar<'_>) -> BarOut {
                 let next = named(
                     ui.add_enabled(
                         total > 0,
-                        egui::Button::new(crate::icons::glyph(ui.ctx(), "findNext")).small(),
+                        egui::Button::new(crate::icons::atom(ui.ctx(), "findNext")).small(),
                     ),
                     "Next match",
                     None,
@@ -194,7 +194,7 @@ pub fn show(ui: &mut Ui, bar: Bar<'_>) -> BarOut {
                 if next.on_hover_text("Next (F3)").clicked() {
                     out.step = Some(true);
                 }
-                if named(ui.small_button(crate::icons::glyph(ui.ctx(), "dismiss")), "Close find", None)
+                if named(ui.small_button(crate::icons::atom(ui.ctx(), "dismiss")), "Close find", None)
                     .on_hover_text("Close (Escape)")
                     .clicked()
                 {

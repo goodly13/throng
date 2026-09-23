@@ -24,6 +24,51 @@ pub fn glyph(ctx: &Context, token: &str) -> String {
         .map_or_else(|| IconSet::default().get(token).to_owned(), |set| set.get(token).to_owned())
 }
 
+/// What draws the icon for `token`, for a button or label: the pack's image, sized to the text and
+/// named for assistive technology, when it has one that loads; otherwise the glyph.
+#[must_use]
+pub fn atom(ctx: &Context, token: &str) -> egui::Atom<'static> {
+    atom_with(ctx, token, |text| text)
+}
+
+/// [`atom`], with the glyph's text styled by `style` (an image is drawn as it is).
+pub fn atom_with(
+    ctx: &Context,
+    token: &str,
+    style: impl FnOnce(egui::RichText) -> egui::RichText,
+) -> egui::Atom<'static> {
+    let set = ctx.data(|d| d.get_temp::<Arc<IconSet>>(set_id()));
+    if let Some(path) = set.as_ref().and_then(|s| s.image(token)) {
+        let size = ctx.global_style().text_styles.get(&egui::TextStyle::Button).map_or(14.0, |f| f.size);
+        let name = throng_core::icons::ICONS.iter().find(|i| i.token == token).map_or(token, |i| i.label);
+        let image = egui::Image::new(format!("file://{}", path.display()))
+            .fit_to_exact_size(vec2(size, size))
+            .alt_text(name);
+        // One that will not decode draws the glyph instead.
+        if image.load_for_size(ctx, vec2(size, size)).is_ok() {
+            return image.into();
+        }
+    }
+    style(egui::RichText::new(glyph(ctx, token))).into()
+}
+
+/// The largest image an icon pack may use.
+const MAX_ICON_BYTES: u64 = 1024 * 1024;
+
+/// The file an icon pack's image token names, when it can be used: an SVG or PNG inside the pack's
+/// folder (links followed), no larger than a mebibyte.
+#[must_use]
+pub fn pack_image(folder: &Path, written: &str) -> Option<std::path::PathBuf> {
+    let lower = written.to_ascii_lowercase();
+    if !(lower.ends_with(".svg") || lower.ends_with(".png")) || Path::new(written).is_absolute() {
+        return None;
+    }
+    let folder = std::fs::canonicalize(folder).ok()?;
+    let path = std::fs::canonicalize(folder.join(written)).ok()?;
+    let meta = std::fs::metadata(&path).ok()?;
+    (path.starts_with(&folder) && meta.is_file() && meta.len() <= MAX_ICON_BYTES).then_some(path)
+}
+
 /// Whether the interface font can draw every character of `glyph`.
 #[must_use]
 pub fn drawable(ctx: &Context, glyph: &str) -> bool {
@@ -82,7 +127,7 @@ fn paint(ui: &Ui, icon: Icon, rect: Rect, colour: Color32) {
 /// A small button showing the icon for `token`, named `name` for assistive technology and
 /// enabled or not.
 pub fn token_button(ui: &mut Ui, token: &str, name: &str, enabled: bool) -> Response {
-    let response = ui.add_enabled(enabled, egui::Button::new(glyph(ui.ctx(), token)).small());
+    let response = ui.add_enabled(enabled, egui::Button::new(atom(ui.ctx(), token)).small());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
     response
 }

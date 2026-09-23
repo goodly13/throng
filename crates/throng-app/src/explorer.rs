@@ -413,23 +413,30 @@ impl Explorer {
                 (true, false) => ("chevron", "folder"),
                 (false, _) => ("", "file"),
             };
-            let glyph = |token: &str| {
-                if token.is_empty() { String::new() } else { crate::icons::glyph(ui.ctx(), token) }
+            let chevron = if chevron.is_empty() {
+                egui::Atom::from("")
+            } else {
+                crate::icons::atom_with(ui.ctx(), chevron, RichText::weak)
             };
-            let (chevron, icon) = (glyph(chevron), glyph(icon));
+            // Named as before: the icon's glyph and the name, whether the icon draws as an image.
+            let spoken = format!("{} {}", crate::icons::glyph(ui.ctx(), icon), entry.name);
+            let icon = crate::icons::atom(ui.ctx(), icon);
             ui.add_sized(
                 egui::vec2(12.0, ui.spacing().interact_size.y),
-                egui::Label::new(RichText::new(chevron).weak()),
+                egui::Button::new(chevron).frame(false).sense(Sense::hover()),
             );
             let selected = self.selected.as_ref() == Some(&entry.path);
-            let mut text = RichText::new(format!("{icon} {}", entry.name));
+            let mut text = RichText::new(format!(" {}", entry.name));
             if entry.is_symlink {
                 text = text.italics();
             }
-            let label = egui::Button::selectable(selected, text)
+            let label = egui::Button::selectable(selected, (icon, text))
                 .frame_when_inactive(false)
                 .sense(Sense::click_and_drag());
             let response = ui.add(label);
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, &spoken)
+            });
             if selected {
                 ui.painter().vline(
                     response.rect.left() - 2.0,
