@@ -371,8 +371,17 @@ missing. [Open work](#open-work) collects every gap in one list.
   - **Tab.** A preview is titled `<name> - Preview` and is dirty exactly while its source is. It
     cannot be renamed, and it closes without a prompt.
 
-  *Not yet:* images (their alternative text shows instead), scroll sync with the editor, and
-  back/forward history.
+  - **Images.** An image draws when it may load, fitted to the width, and its tooltip names its
+    source as written and its title. Otherwise its alternative text stands in:
+    - A local image loads when it resolves, against the document's folder and with links
+      followed, to a file inside the project of at most 20 MiB. PNG, JPEG, GIF, WebP, BMP and SVG
+      are decoded.
+    - An `https:` image loads while `editor.previews.loadRemoteImages` is on (the default). Off,
+      nothing is fetched.
+    - `http:`, `data:`, `file:` and every other scheme never load.
+    - An image inside a link is the link, and its tooltip names the link's target.
+
+  *Not yet:* scroll sync with the editor, and back/forward history.
 
 ### Appearance and configuration
 
@@ -462,7 +471,7 @@ In rough order of value:
 3. **Sub-workspaces** (FR-021): the single focus group, dragging a tab out to tear it off, and moving
    a panel rather than showing it.
 4. **Icon packs:** image (SVG) icons (FR-043).
-5. **Markdown previews:** images, scroll sync, and back/forward history (FR-038).
+5. **Markdown previews:** scroll sync, and back/forward history (FR-038).
 
 ## Done means
 

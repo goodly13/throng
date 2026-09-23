@@ -24,10 +24,12 @@ pub enum Inline {
         style: Style,
         link: Option<String>,
     },
-    /// Shown as its alternative text (an image that cannot load shows its alt text).
+    /// Drawn when it can be (see the preview); otherwise its alternative text stands in.
     Image {
         alt: String,
         src: String,
+        /// The document's own title for it, if any.
+        title: String,
         link: Option<String>,
     },
     Break,
@@ -170,7 +172,8 @@ struct Builder {
     inline: Option<(Gather, Vec<Inline>)>,
     style: Vec<Style>,
     links: Vec<String>,
-    image: Option<(String, String)>,
+    /// An image being read: its source, title, and the alternative text so far.
+    image: Option<(String, String, String)>,
     code: Option<(String, String)>,
     metadata: Option<String>,
     /// Inside `<script>` or `<style>`: everything until this closing tag is dropped.
@@ -205,7 +208,7 @@ impl Builder {
         if self.skip_until.is_some() {
             return;
         }
-        if let Some((_, alt)) = &mut self.image {
+        if let Some((_, _, alt)) = &mut self.image {
             alt.push_str(text);
             return;
         }
@@ -307,8 +310,9 @@ impl Builder {
                 ("img", false) => {
                     let alt = attribute(tag, "alt").unwrap_or_default();
                     let src = attribute(tag, "src").unwrap_or_default();
+                    let title = attribute(tag, "title").unwrap_or_default();
                     let link = self.links.last().cloned();
-                    self.push_inline(Inline::Image { alt, src, link });
+                    self.push_inline(Inline::Image { alt, src, title, link });
                 }
                 _ => {}
             }
@@ -477,7 +481,9 @@ pub fn parse(text: &str) -> Document {
                 Tag::Superscript => b.push_style(|s| s.sup = true),
                 Tag::Subscript => b.push_style(|s| s.sub = true),
                 Tag::Link { dest_url, .. } => b.links.push(dest_url.into_string()),
-                Tag::Image { dest_url, .. } => b.image = Some((dest_url.into_string(), String::new())),
+                Tag::Image { dest_url, title, .. } => {
+                    b.image = Some((dest_url.into_string(), title.into_string(), String::new()));
+                }
                 Tag::MetadataBlock(MetadataBlockKind::YamlStyle) => b.metadata = Some(String::new()),
                 Tag::HtmlBlock => b.flush(),
                 _ => {}
@@ -539,9 +545,9 @@ pub fn parse(text: &str) -> Document {
                     b.links.pop();
                 }
                 TagEnd::Image => {
-                    if let Some((src, alt)) = b.image.take() {
+                    if let Some((src, title, alt)) = b.image.take() {
                         let link = b.links.last().cloned();
-                        b.push_inline(Inline::Image { alt, src, link });
+                        b.push_inline(Inline::Image { alt, src, title, link });
                     }
                 }
                 TagEnd::MetadataBlock(_) => {

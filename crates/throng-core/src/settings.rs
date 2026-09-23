@@ -188,6 +188,13 @@ pub const SETTINGS: &[SettingDef] = &[
         kind: SettingKind::Int { min: 0, max: 10_000, default: 1_000 },
     },
     SettingDef {
+        key: "editor.previews.loadRemoteImages",
+        label: "Load remote images in previews",
+        help: "Previews show https: images from the web. Off, they show their alternative text and \
+               nothing is fetched. Other remote content never loads.",
+        kind: SettingKind::Bool { default: true },
+    },
+    SettingDef {
         key: "editor.showStatusBar",
         label: "Show editor status bar",
         help: "A strip under each editor with the caret, counts, language, wrap and preview.",
@@ -579,6 +586,11 @@ impl Settings {
     #[must_use]
     pub fn remember_directory(&self) -> bool {
         self.bool("terminal.defaultRememberDirectory")
+    }
+    /// Whether previews load `https:` images.
+    #[must_use]
+    pub fn preview_remote_images(&self) -> bool {
+        self.bool("editor.previews.loadRemoteImages")
     }
     /// Whether a project's terminals wait to be reloaded rather than starting when it opens.
     #[must_use]

@@ -3,6 +3,7 @@
 //! editor it follows that document, unsaved edits included; otherwise it follows the disk
 //! and reads the file without opening it as a document.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -10,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime};
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, CursorIcon, FontId, RichText, Sense, Stroke, Ui, vec2};
 use syntect::highlighting::Theme;
+use throng_core::paths::PathRules;
 use throng_editor::highlight::Highlighter;
 
 use crate::links::LinkAction;
@@ -55,6 +57,9 @@ pub struct PreviewState {
     pub refresh: bool,
     code: Vec<CodeCache>,
     theme_key: usize,
+    /// Each image source's loadable address, or `None` when it stays alt text: worked out once per
+    /// showing, since it asks the disk.
+    images: HashMap<String, Option<String>>,
 }
 
 impl PreviewState {
@@ -71,11 +76,13 @@ impl PreviewState {
             refresh: false,
             code: Vec::new(),
             theme_key: 0,
+            images: HashMap::new(),
         }
     }
 
     fn show_text(&mut self, text: &str, shown: Shown) {
         self.document = Some(markdown::parse(text));
+        self.images.clear();
         self.shown = Some(shown);
         self.pending = None;
         self.problem = None;
@@ -156,6 +163,50 @@ pub struct PreviewStyle {
     /// The editor's syntax colours, for code blocks.
     pub theme: Arc<Theme>,
     pub link: Color32,
+    pub images: ImagePolicy,
+}
+
+/// Where a preview's images may come from.
+#[derive(Clone, Debug)]
+pub struct ImagePolicy {
+    /// The project the previewed file belongs to: a local image loads only from inside it.
+    pub root: Option<PathBuf>,
+    pub rules: PathRules,
+    /// Whether `https:` images load (`editor.previews.loadRemoteImages`). No other remote image
+    /// ever does.
+    pub remote: bool,
+}
+
+/// The largest local image a preview decodes.
+const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+
+impl ImagePolicy {
+    /// The address an image written as `src` in a document in `dir` loads from, or `None` when it
+    /// stays alt text: an `https:` image while remote images are on, or a file inside the project
+    /// (resolved against the document's folder, links followed) no larger than
+    /// [`MAX_IMAGE_BYTES`]. `http:`, `data:`, `file:` and every other scheme never load.
+    #[must_use]
+    pub fn address(&self, src: &str, dir: Option<&Path>) -> Option<String> {
+        let src = src.trim();
+        let lower = src.to_ascii_lowercase();
+        if lower.starts_with("https://") {
+            return self.remote.then(|| src.to_owned());
+        }
+        let scheme = lower.split_once(':').is_some_and(|(s, _)| {
+            s.len() > 1 && s.chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
+        });
+        if src.is_empty() || scheme {
+            return None;
+        }
+        let written = src.replace("%20", " ");
+        let written = Path::new(&written);
+        let path = if written.is_absolute() { written.to_path_buf() } else { dir?.join(written) };
+        let path = std::fs::canonicalize(path).ok()?;
+        let root = std::fs::canonicalize(self.root.as_ref()?).ok()?;
+        let meta = std::fs::metadata(&path).ok()?;
+        (self.rules.is_within(&root, &path) && meta.is_file() && meta.len() <= MAX_IMAGE_BYTES)
+            .then(|| format!("file://{}", path.display()))
+    }
 }
 
 /// A link the reader followed or asked about: its written target and what they asked.
@@ -163,6 +214,9 @@ pub type LinkRequest = (String, LinkAction);
 
 struct Render<'a> {
     style: &'a PreviewStyle,
+    /// The previewed file's folder, which relative images are read from.
+    dir: Option<&'a Path>,
+    images: &'a mut HashMap<String, Option<String>>,
     code: &'a mut Vec<CodeCache>,
     code_index: usize,
     anchor: Option<String>,
@@ -179,6 +233,8 @@ pub fn show(ui: &mut Ui, state: &mut PreviewState, style: &PreviewStyle) -> Vec<
     let Some(document) = state.document.as_ref() else { return Vec::new() };
     let mut render = Render {
         style,
+        dir: state.path.parent(),
+        images: &mut state.images,
         code: &mut state.code,
         code_index: 0,
         anchor: state.anchor.take(),
@@ -347,17 +403,8 @@ impl Render<'_> {
                             }
                         }
                     }
-                    Inline::Image { alt, src, link } => {
-                        // No image is decoded here: its alternative text stands in.
-                        let label =
-                            if alt.is_empty() { format!("[image: {src}]") } else { format!("[{alt}]") };
-                        let rich = RichText::new(label).italics().size(size);
-                        match link.as_deref().or(Some(src.as_str())).filter(|s| !s.is_empty()) {
-                            Some(href) => self.link(ui, rich, href),
-                            None => {
-                                ui.label(rich);
-                            }
-                        }
+                    Inline::Image { alt, src, title, link } => {
+                        self.image(ui, (alt, src, title), size, link.as_deref());
                     }
                     Inline::Break => ui.end_row(),
                 }
@@ -366,11 +413,49 @@ impl Render<'_> {
         .response
     }
 
+    /// An image, drawn when it loads and shown as its alternative text when it cannot. Its tooltip
+    /// names its source as written, and its title; inside a link it is the link, and the link's
+    /// target is what its tooltip names.
+    fn image(&mut self, ui: &mut Ui, (alt, src, title): (&str, &str, &str), size: f32, link: Option<&str>) {
+        let address = self
+            .images
+            .entry(src.to_owned())
+            .or_insert_with(|| self.style.images.address(src, self.dir))
+            .clone();
+        let width = ui.available_width().max(16.0);
+        let image = address
+            .map(|uri| egui::Image::new(uri).max_width(width).fit_to_original_size(1.0).alt_text(alt))
+            .filter(|image| image.load_for_size(ui.ctx(), vec2(width, f32::INFINITY)).is_ok());
+        let response = match image {
+            Some(image) => ui.add(image.sense(Sense::click())),
+            None => {
+                let label = if alt.is_empty() { format!("[image: {src}]") } else { format!("[{alt}]") };
+                let mut rich = RichText::new(label).italics().size(size);
+                if link.is_some() {
+                    rich = rich.color(self.style.link).underline();
+                }
+                ui.add(egui::Label::new(rich).sense(Sense::click()))
+            }
+        };
+        match link {
+            Some(href) => self.link_response(ui, &response, href),
+            None => {
+                let tip = if title.is_empty() { src.to_owned() } else { format!("{src}\n{title}") };
+                response.on_hover_text(tip);
+            }
+        }
+    }
+
     /// A link: Ctrl+click (Cmd+click) follows it; a plain click does nothing; right-click
     /// offers Open Link and Copy Link Address.
     fn link(&mut self, ui: &mut Ui, rich: RichText, href: &str) {
         let response =
             ui.add(egui::Label::new(rich.color(self.style.link).underline()).sense(Sense::click()));
+        self.link_response(ui, &response, href);
+    }
+
+    fn link_response(&mut self, ui: &mut Ui, response: &egui::Response, href: &str) {
+        let response = response.clone();
         let command = ui.input(|i| i.modifiers.command);
         if response.hovered() && command {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -462,6 +547,37 @@ fn highlight(text: &str, language: &str, size: f32, theme: &Arc<Theme>, plain: C
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn images_load_from_inside_the_project_and_https_only_while_remote_images_are_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("p");
+        std::fs::create_dir_all(root.join("docs/img")).unwrap();
+        std::fs::write(root.join("docs/img/a b.png"), b"png").unwrap();
+        std::fs::write(dir.path().join("outside.png"), b"png").unwrap();
+        let docs = root.join("docs");
+        let mut policy =
+            ImagePolicy { root: Some(root.clone()), rules: throng_platform::path_rules(), remote: true };
+        let local = |p: &Path| format!("file://{}", std::fs::canonicalize(p).unwrap().display());
+        assert_eq!(policy.address("img/a b.png", Some(&docs)), Some(local(&root.join("docs/img/a b.png"))));
+        assert_eq!(policy.address("img/a%20b.png", Some(&docs)), Some(local(&root.join("docs/img/a b.png"))));
+        assert_eq!(policy.address("../../outside.png", Some(&docs)), None, "outside the project");
+        assert_eq!(policy.address("img/missing.png", Some(&docs)), None);
+        assert_eq!(policy.address("https://x.dev/b.svg", None).as_deref(), Some("https://x.dev/b.svg"));
+        for never in ["http://x.dev/a.png", "data:image/png;base64,AA", "file:///etc/x.png", "ftp://x/a.png"]
+        {
+            assert_eq!(policy.address(never, Some(&docs)), None, "{never}");
+        }
+        policy.remote = false;
+        assert_eq!(policy.address("https://x.dev/b.svg", None), None, "remote images off");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.path().join("outside.png"), root.join("docs/sneaky.png")).unwrap();
+            assert_eq!(policy.address("sneaky.png", Some(&docs)), None, "a link out of the project");
+        }
+        let unbound = ImagePolicy { root: None, ..policy };
+        assert_eq!(unbound.address("img/a b.png", Some(&docs)), None, "no project, no local images");
+    }
 
     #[test]
     fn a_parented_preview_waits_for_typing_to_settle_but_never_longer_than_the_maximum() {

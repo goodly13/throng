@@ -1231,6 +1231,11 @@ fn preview_ui(ui: &mut Ui, panel: PanelId, path: &std::path::Path, ctx: &mut Pan
         code_size: ctx.settings.editor_font_size(),
         theme: std::sync::Arc::clone(&ctx.docs.theme),
         link: ctx.look.code.link,
+        images: crate::preview::ImagePolicy {
+            root: ctx.rules.is_within(&ctx.project.root, path).then(|| ctx.project.root.clone()),
+            rules: *ctx.rules,
+            remote: ctx.settings.preview_remote_images(),
+        },
     };
     let links = egui::ScrollArea::vertical()
         .id_salt(("preview", panel))
