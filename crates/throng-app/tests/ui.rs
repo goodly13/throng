@@ -1329,3 +1329,47 @@ fn with_manual_reload_a_saved_terminal_waits_for_reload_and_a_crash_s_command_co
         other => panic!("not a terminal: {other:?}"),
     }
 }
+
+#[test]
+fn a_preview_draws_the_projects_images_and_shows_alt_text_for_what_it_may_not_load() {
+    let env = Env::new();
+    let root = env.folder("pictures");
+    std::fs::create_dir_all(root.join("img")).unwrap();
+    image::RgbaImage::from_pixel(24, 12, image::Rgba([200, 40, 40, 255]))
+        .save(root.join("img/chart.png"))
+        .unwrap();
+    let outside = env.folder("elsewhere").join("secret.png");
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 0, 255])).save(&outside).unwrap();
+    let readme = root.join("README.md");
+    std::fs::write(
+        &readme,
+        format!(
+            "# Pictures\n\n![a red chart](img/chart.png \"Q3\")\n\n![kept out]({})\n\n![plain web](http://x.invalid/a.png)\n",
+            outside.display()
+        ),
+    )
+    .unwrap();
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, PanelKind::Preview(PreviewPanelConfig { path: readme.clone() }));
+    });
+    let mut harness = env.app(None);
+    let uri = format!("file://{}", std::fs::canonicalize(root.join("img/chart.png")).unwrap().display());
+    let deadline = Instant::now() + WAIT;
+    loop {
+        harness.step();
+        let poll =
+            harness.ctx.try_load_texture(&uri, egui::TextureOptions::default(), egui::SizeHint::default());
+        if matches!(poll, Ok(egui::load::TexturePoll::Ready { .. })) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the chart never decoded: {:?}", poll.err());
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    steps(&mut harness, 2);
+    // Drawn, and named by its alt text; the ones it may not load stand as their alt text.
+    harness.get_by_label("a red chart");
+    assert!(harness.query_by_label("[a red chart]").is_none(), "drawn, not stood in for");
+    harness.get_by_label("[kept out]");
+    harness.get_by_label("[plain web]");
+}

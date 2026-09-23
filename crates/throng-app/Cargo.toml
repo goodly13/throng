@@ -24,6 +24,7 @@ throng-editor.workspace = true
 eframe.workspace = true
 egui.workspace = true
 egui_dock.workspace = true
+egui_extras.workspace = true
 alacritty_terminal.workspace = true
 image.workspace = true
 anyhow.workspace = true

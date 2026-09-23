@@ -44,7 +44,10 @@ egui = "0.36"
 egui_dock = { version = "0.21", features = ["serde"] }
 egui_kittest = "0.36"
 alacritty_terminal = "0.26"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# Image loading for previews and icon packs: decoded images and SVG, files, and https for a
+# preview's remote images.
+egui_extras = { version = "0.36", default-features = false, features = ["image", "svg", "file", "http"] }
 ropey = "1.6"
 pulldown-cmark = { version = "0.13", default-features = false }
 unicode-width = "0.2"

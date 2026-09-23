@@ -183,6 +183,9 @@ impl ThrongApp {
     pub fn new(ctx: &Context, services: Services) -> anyhow::Result<Self> {
         let Services { dirs, exe, open, screenshot } = services;
         dirs.ensure()?;
+        // Images for previews and icon packs: files, https (a preview decides what it asks for),
+        // decoded formats and SVG.
+        egui_extras::install_image_loaders(ctx);
         let rules = throng_platform::path_rules();
         let mut notices = NoticeCenter::default();
 
