@@ -1,0 +1,167 @@
+name: Package
+
+# Installers: each package is built, then installed, mounted or unpacked and run (`throng --version`)
+# from where a user would run it, and kept as a workflow artifact. Nothing is published yet.
+#
+# macOS packages are signed and notarised when the repository has these secrets, and ad-hoc signed
+# (runnable where built, refused by Gatekeeper elsewhere) when it does not:
+#   APPLE_CERTIFICATE_P12 (base64 of a Developer ID Application .p12), APPLE_CERTIFICATE_PASSWORD,
+#   APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD.
+
+on:
+  workflow_dispatch:
+  push:
+    # Branch pushes that touch the packaging; a v* tag always (paths do not filter tags).
+    branches: ['**']
+    tags: ['v*']
+    paths: ['packaging/**', 'Cargo.lock', '.github/workflows/package.yml']
+  pull_request:
+    paths: ['packaging/**', 'Cargo.lock', '.github/workflows/package.yml']
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    # The oldest supported runner, so the binary asks for the oldest glibc it can.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rust toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install --profile minimal && rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: appimagetool
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          echo "APPIMAGETOOL=$RUNNER_TEMP/appimagetool" >> "$GITHUB_ENV"
+
+      - name: Package
+        run: packaging/package.sh
+
+      - name: Install the .deb and run it
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ./dist/throng_*.deb
+          throng --version | grep -q '^throng '
+          test -f /usr/share/applications/throng.desktop
+          test -f /usr/share/icons/hicolor/256x256/apps/throng.png
+          test -f /usr/share/doc/throng/LICENSE && test -f /usr/share/doc/throng/NOTICE
+          sudo apt-get remove -y throng
+
+      - name: Run the AppImage
+        run: APPIMAGE_EXTRACT_AND_RUN=1 dist/throng-*-x86_64.AppImage --version | grep -q '^throng '
+
+      - name: Run from the archive
+        run: |
+          tar -C "$RUNNER_TEMP" -xzf dist/throng-*-linux-x86_64.tar.gz
+          "$RUNNER_TEMP"/throng-*-linux-x86_64/throng --version | grep -q '^throng '
+          test -f "$RUNNER_TEMP"/throng-*-linux-x86_64/NOTICE
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: throng-linux
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rust toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install --profile minimal && rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Signing certificate
+        if: env.APPLE_CERTIFICATE_P12 != ''
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(uuidgen)
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Package
+        run: packaging/package.sh
+
+      - name: Mount the .dmg and run the app
+        run: |
+          mount="$RUNNER_TEMP/throng-dmg"
+          hdiutil attach dist/throng-*-macos-universal.dmg -mountpoint "$mount" -nobrowse
+          app="$mount/throng.app"
+          "$app/Contents/MacOS/throng" --version | grep -q '^throng '
+          lipo -archs "$app/Contents/MacOS/throng" | grep -q arm64
+          lipo -archs "$app/Contents/MacOS/throng" | grep -q x86_64
+          codesign --verify --strict "$app"
+          test -f "$app/Contents/Resources/NOTICE"
+          test -L "$mount/Applications"
+          hdiutil detach "$mount"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: throng-macos
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rust toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install --profile minimal && rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Package
+        run: packaging/package.sh
+
+      - name: Unpack the .zip and run it
+        run: |
+          zip=$(ls dist/throng-*-windows-*.zip)
+          powershell -NoProfile -Command "Expand-Archive -Path '$(cygpath -w "$zip")' -DestinationPath '$(cygpath -w "$RUNNER_TEMP/throng")'"
+          "$RUNNER_TEMP/throng/throng.exe" --version | grep -q '^throng '
+          test -f "$RUNNER_TEMP/throng/LICENSE" && test -f "$RUNNER_TEMP/throng/NOTICE"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: throng-windows
+          path: dist/*.zip
+          if-no-files-found: error

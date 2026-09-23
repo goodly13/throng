@@ -1,0 +1,85 @@
+name: CI
+
+# fmt, clippy with warnings denied, and every test, on Linux, macOS and Windows; then a headless
+# launch of the real binary on Linux. Linux and macOS are the first-class targets; Windows is built
+# and tested too so nothing forecloses it (Principle II).
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rust toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install --profile minimal && rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: GUI libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-x11-0 xvfb libgl1-mesa-dri
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --no-fail-fast
+
+      # The real binary, on a virtual display: seed a project with a terminal and an editor, open
+      # it, and screenshot. Proves the app starts, spawns its daemon, and draws.
+      - name: Smoke test (Linux, headless)
+        if: runner.os == 'Linux'
+        run: |
+          export THRONG_HOME="$RUNNER_TEMP/throng-home"
+          cargo run -q -p throng-app --example seed -- "$THRONG_HOME" "$GITHUB_WORKSPACE"
+          cargo build -q -p throng-app
+          THRONG_SCREENSHOT="$RUNNER_TEMP/smoke.png" LIBGL_ALWAYS_SOFTWARE=1 \
+            timeout 120 xvfb-run -a -s "-screen 0 1400x900x24" ./target/debug/throng
+          test -s "$RUNNER_TEMP/smoke.png"
+          grep -q "screenshot saved" "$THRONG_HOME/logs/ui.log"
+
+      - name: Upload smoke screenshot
+        if: runner.os == 'Linux' && always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: smoke-screenshot
+          path: ${{ runner.temp }}/smoke.png
+          if-no-files-found: ignore
+
+      - name: Release build
+        run: cargo build --release -p throng-app
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v6
+        with:
+          name: throng-${{ runner.os }}
+          path: |
+            target/release/throng
+            target/release/throng.exe
+          if-no-files-found: error

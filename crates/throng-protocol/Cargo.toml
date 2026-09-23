@@ -1,0 +1,18 @@
+[package]
+name = "throng-protocol"
+description = "The wire protocol between the throng UI and its terminal daemon."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+throng-core.workspace = true
+serde.workspace = true
+serde_bytes.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

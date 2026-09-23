@@ -1,0 +1,70 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "AGPL-3.0-only"
+repository = "https://github.com/goodly13/throng"
+
+[workspace.dependencies]
+throng-core = { path = "crates/throng-core" }
+throng-platform = { path = "crates/throng-platform" }
+throng-protocol = { path = "crates/throng-protocol" }
+throng-daemon = { path = "crates/throng-daemon" }
+throng-persistence = { path = "crates/throng-persistence" }
+throng-editor = { path = "crates/throng-editor" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+postcard = { version = "1", features = ["use-std"] }
+serde_bytes = "0.11"
+uuid = { version = "1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+directories = "6"
+encoding_rs = "0.8"
+interprocess = "2"
+portable-pty = "0.9"
+rusqlite = { version = "0.40", features = ["bundled"] }
+notify = "8"
+trash = "5"
+libc = "0.2"
+tempfile = "3"
+time = { version = "0.3", features = ["formatting", "macros"] }
+
+eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+egui = "0.36"
+egui_dock = { version = "0.21", features = ["serde"] }
+egui_kittest = "0.36"
+alacritty_terminal = "0.26"
+image = { version = "0.25", default-features = false, features = ["png"] }
+ropey = "1.6"
+pulldown-cmark = { version = "0.13", default-features = false }
+unicode-width = "0.2"
+unicode-segmentation = "1.13"
+regex = "1"
+# bat's syntax set (TOML, TypeScript, Dockerfile, …) on syntect's pure-Rust regex engine, matching
+# egui_extras so the two share one syntect build.
+two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"] }
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+[profile.dev.package."*"]
+opt-level = 2
