@@ -270,6 +270,13 @@ pub const SETTINGS: &[SettingDef] = &[
         help: "Quick Open's starting state for files under \"Hide in this project\".",
         kind: SettingKind::Bool { default: true },
     },
+    SettingDef {
+        key: "updates.check",
+        label: "Check for updates",
+        help: "Ask GitHub for the latest throng release at start and once a day, and say when a newer \
+               one is out. Nothing is downloaded or installed.",
+        kind: SettingKind::Bool { default: true },
+    },
 ];
 
 /// Keys that used to exist and are deliberately dropped on the next write.
@@ -652,6 +659,10 @@ impl Settings {
             self.bool("editor.statusBar.showCursorPosition"),
             self.bool("editor.statusBar.showCounts"),
         )
+    }
+    #[must_use]
+    pub fn check_for_updates(&self) -> bool {
+        self.bool("updates.check")
     }
     #[must_use]
     pub fn terminal_status_bar(&self) -> bool {

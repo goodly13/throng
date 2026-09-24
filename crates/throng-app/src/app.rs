@@ -54,7 +54,14 @@ pub struct Services {
     pub screenshot: Option<(PathBuf, Duration)>,
     /// Ask the user for a folder, starting in the given one.
     pub pick_folder: FolderPicker,
+    /// Where the update check learns the latest release.
+    pub releases: crate::update_check::ReleaseSource,
 }
+
+/// The notice that a newer release is out, and its actions.
+const UPDATE_NOTICE: &str = "update-available";
+/// The release the user chose to skip; its notice is not raised again.
+const UPDATE_SKIPPED_KEY: &str = "update.skipped";
 
 /// Asks the user for a folder, starting in the given one; `None` when they cancel.
 pub type FolderPicker = Box<dyn FnMut(Option<&Path>) -> Option<PathBuf>>;
@@ -103,6 +110,9 @@ pub struct ThrongApp {
     prefs: crate::prefs::Prefs,
     screenshot: Option<(PathBuf, Instant, bool)>,
     pick_folder: FolderPicker,
+    updates: crate::update_check::UpdateCheck,
+    /// The newer release the update notice offers.
+    update_offer: Option<String>,
     started: Instant,
     /// The themes on offer, built in and the user's own.
     themes: crate::themes::ThemeStore,
@@ -219,7 +229,7 @@ fn read_settings(path: &Path) -> (Settings, ReadOutcome) {
 impl ThrongApp {
     /// Build the app. Any error here is a startup failure the caller reports and exits on.
     pub fn new(ctx: &Context, services: Services) -> anyhow::Result<Self> {
-        let Services { dirs, exe, open, screenshot, pick_folder } = services;
+        let Services { dirs, exe, open, screenshot, pick_folder, releases } = services;
         dirs.ensure()?;
         // Images for previews and icon packs: files, https (a preview decides what it asks for),
         // decoded formats and SVG.
@@ -300,6 +310,8 @@ impl ThrongApp {
             prefs: crate::prefs::Prefs::default(),
             screenshot: screenshot.map(|(path, delay)| (path, Instant::now() + delay, false)),
             pick_folder,
+            updates: crate::update_check::UpdateCheck::new(releases),
+            update_offer: None,
             started: Instant::now(),
             themes: crate::themes::ThemeStore::load(themes_dir),
             look: crate::theme::Look::default(),
@@ -3498,10 +3510,44 @@ impl ThrongApp {
             match action.as_str() {
                 "replace-daemon" => self.link.replace_blocking_daemon(),
                 "open-settings" => self.prefs.open = true,
+                "update-download" => {
+                    let page = throng_core::update::LATEST_RELEASE_PAGE;
+                    if let Err(e) = throng_platform::fs::open_with_default_app(page) {
+                        tracing::warn!(error = %e, "could not open the release page");
+                    }
+                }
+                "update-skip" => {
+                    if let Some(version) = self.update_offer.take()
+                        && let Err(e) = self.store.set_state(UPDATE_SKIPPED_KEY, Some(&version))
+                    {
+                        tracing::warn!(error = %e, "could not remember the skipped release");
+                    }
+                }
                 _ => {}
             }
             self.notices.dismiss(&key);
         }
+    }
+
+    /// FR-052: say once, with a link, when a newer release than this one is out.
+    fn check_for_updates(&mut self, ctx: &Context) {
+        let Some(tag) = self.updates.poll(ctx, self.settings.check_for_updates()) else { return };
+        let running = env!("CARGO_PKG_VERSION");
+        let Some(latest) = throng_core::update::newer_release(&tag, running) else { return };
+        let latest = latest.to_string();
+        if self.store.state(UPDATE_SKIPPED_KEY).ok().flatten().as_deref() == Some(latest.as_str()) {
+            return;
+        }
+        self.notices.raise_quietly(
+            Notice::new(
+                UPDATE_NOTICE,
+                Severity::Info,
+                format!("throng {latest} is available. This is {running}."),
+            )
+            .with_action("update-download", "Download")
+            .with_action("update-skip", "Skip This Version"),
+        );
+        self.update_offer = Some(latest);
     }
 
     fn welcome(&mut self, ui: &mut Ui) {
@@ -3607,6 +3653,7 @@ fn settings_malformed(reason: &str) -> Notice {
 impl eframe::App for ThrongApp {
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.process_link(ctx);
+        self.check_for_updates(ctx);
         self.hub.remember_directory = self.settings.remember_directory();
         if let Some(again) = self.hub.poll_directories(self.link.client()) {
             ctx.request_repaint_after(again);

@@ -3960,6 +3960,7 @@ dependencies = [
  "egui_dock",
  "egui_extras",
  "egui_kittest",
+ "ehttp",
  "image",
  "notify",
  "pulldown-cmark",
