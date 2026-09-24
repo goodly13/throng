@@ -224,6 +224,7 @@ impl ThrongApp {
         // Images for previews and icon packs: files, https (a preview decides what it asks for),
         // decoded formats and SVG.
         egui_extras::install_image_loaders(ctx);
+        crate::theme::install_fonts(ctx);
         let rules = throng_platform::path_rules();
         let mut notices = NoticeCenter::default();
 
@@ -2615,6 +2616,10 @@ impl ThrongApp {
                     self.open_in_editor(pid, path);
                 }
                 explorer::Action::FindIn(path) => self.find_in_files(ctx, false, false, Some(path)),
+                explorer::Action::MoveToOtherSide => {
+                    let right = self.settings.file_tree_on_right();
+                    self.set_side("appearance.fileTreeSide", !right);
+                }
                 explorer::Action::OpenTerminal(dir) => {
                     let anchor = self.active_panel();
                     if let Some(ws) = self.workspaces.get_mut(&pid) {
@@ -3187,10 +3192,9 @@ impl ThrongApp {
 
     fn sidebar(&mut self, ui: &mut Ui, ctx: &Context) {
         ui.horizontal(|ui| {
-            ui.strong("PROJECTS");
+            ui.label(crate::theme::section_title(ui, "Projects"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .small_button(crate::icons::atom(ui.ctx(), "add"))
+                if crate::icons::token_button(ui, "add", "Add Project", true)
                     .on_hover_text(hint(ui.ctx(), "New project", "project.new"))
                     .clicked()
                 {
@@ -3216,7 +3220,12 @@ impl ThrongApp {
                         } else {
                             RichText::new(&project.name)
                         };
-                        ui.add(egui::Button::selectable(selected, text).frame_when_inactive(false))
+                        // The row's full width is the project's to hover and click.
+                        ui.add(
+                            egui::Button::selectable(selected, (text, egui::Atom::grow()))
+                                .frame_when_inactive(false)
+                                .min_size(egui::vec2(ui.available_width(), 0.0)),
+                        )
                     })
                     .inner;
                 let response = response.on_hover_text(project.root.display().to_string());
@@ -3280,7 +3289,7 @@ impl ThrongApp {
             return;
         }
         ui.add_space(10.0);
-        ui.strong("SUB-WORKSPACES");
+        ui.label(crate::theme::section_title(ui, "Sub-workspaces"));
         ui.separator();
         let subs = self.subs.list.clone();
         for sub in subs {
@@ -3366,16 +3375,14 @@ impl ThrongApp {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let title = ui
                         .add(
-                            egui::Label::new(RichText::new(project.name.to_uppercase()).strong())
+                            egui::Label::new(crate::theme::section_title(ui, &project.name))
                                 .truncate()
                                 .sense(egui::Sense::click()),
                         )
                         .on_hover_text(project.root.display().to_string());
                     let right = self.settings.file_tree_on_right();
                     title.context_menu(|ui| {
-                        let label =
-                            if right { "Move File Tree to the Left" } else { "Move File Tree to the Right" };
-                        if ui.button(label).clicked() {
+                        if ui.button(explorer::move_label(right)).clicked() {
                             self.set_side("appearance.fileTreeSide", !right);
                             ui.close();
                         }
@@ -3393,6 +3400,7 @@ impl ThrongApp {
                     can_undo: history.is_some_and(FileHistory::can_undo),
                     can_redo: history.is_some_and(FileHistory::can_redo),
                 };
+                explorer.on_right = self.settings.file_tree_on_right();
                 explorer.ui(ui, &self.rules, &exclude, &project.hidden_paths, accent, history)
             }
             None => Vec::new(),
@@ -3645,10 +3653,16 @@ impl eframe::App for ThrongApp {
         };
 
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui, &mut actions));
-        egui::Panel::bottom("status").exact_size(24.0).show(ui, |ui| self.status_bar(ui));
+        let status_frame = egui::Frame::side_top_panel(&ctx.global_style()).fill(self.look.status_bar);
+        egui::Panel::bottom("status").exact_size(24.0).frame(status_frame).show(ui, |ui| self.status_bar(ui));
+        // The side columns stand a shade apart from the work between them.
+        let side_frame = egui::Frame::side_top_panel(&ctx.global_style())
+            .fill(self.look.sidebar)
+            .inner_margin(egui::Margin::symmetric(8, 6));
         // The projects list is made first, so it is outermost on its side; the file tree sits
         // inside it when they share a side.
         side_panel(self.settings.projects_on_right(), "sidebar")
+            .frame(side_frame)
             .resizable(true)
             .default_size(190.0)
             .size_range(120.0..=360.0)
@@ -3657,6 +3671,7 @@ impl eframe::App for ThrongApp {
             });
         if self.show_explorer && self.book.active_id().is_some() {
             side_panel(self.settings.file_tree_on_right(), "explorer")
+                .frame(side_frame)
                 .resizable(true)
                 .default_size(260.0)
                 .size_range(150.0..=600.0)

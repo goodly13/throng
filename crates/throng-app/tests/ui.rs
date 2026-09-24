@@ -1174,10 +1174,10 @@ fn an_icon_pack_draws_the_tree_and_what_it_cannot_draw_keeps_throngs_icon() {
     env.dirs.ensure().unwrap();
     let pack = env.dirs.config.join("icon-packs/letters");
     std::fs::create_dir_all(&pack).unwrap();
-    // U+E000 is a private-use character no bundled font draws.
+    // U+10FFFD, written as JSON's surrogate pair, is a private-use character no bundled font draws.
     std::fs::write(
         pack.join("pack.json"),
-        r#"{"name":"Letters","tokens":{"file":"F","folder":"D","refresh":"","newFile":"new.svg","newFolder":"img/plus.svg","dismiss":"../escape.svg"}}"#,
+        r#"{"name":"Letters","tokens":{"file":"F","folder":"D","refresh":"\udbff\udffd","newFile":"new.svg","newFolder":"img/plus.svg","dismiss":"../escape.svg"}}"#,
     )
     .unwrap();
     // An SVG in the pack draws; one outside it is refused.
@@ -1733,4 +1733,26 @@ fn the_file_tree_moves_to_the_right_from_the_view_menu_and_stays_there() {
     let mut harness = env.app(None);
     steps(&mut harness, 3);
     assert!(harness.get_by_label("🗋 a.txt").rect().center().x > middle);
+
+    // Right-clicking anywhere in the tree offers the move back.
+    harness.get_by_label("🗋 a.txt").click_secondary();
+    steps(&mut harness, 3);
+    click_slowly(&mut harness, "Move File Tree to the Left");
+    steps(&mut harness, 3);
+    assert!(harness.get_by_label("🗋 a.txt").rect().center().x < middle, "back on the left");
+}
+
+#[test]
+fn a_folder_rows_own_buttons_show_on_hover_and_make_things_inside_it() {
+    let env = Env::new();
+    let (root, mut harness) = project_with(&env, &[("sub/b.txt", "b\n")]);
+    assert!(harness.query_by_label("New File in sub").is_none(), "only while the pointer is over the row");
+    let row = harness.get_by_label(&folder_row(&harness, "sub")).rect().center();
+    harness.event(egui::Event::PointerMoved(row));
+    steps(&mut harness, 2);
+    click_slowly(&mut harness, "New File in sub");
+    steps(&mut harness, 2);
+    harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "File name").type_text("inside.txt");
+    harness.key_press(Key::Enter);
+    wait(&mut harness, "the file inside the folder", |_| root.join("sub/inside.txt").is_file());
 }

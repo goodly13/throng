@@ -366,7 +366,7 @@ pub fn show(
                         let chevron = crate::icons::atom_with(
                             ui.ctx(),
                             if open { "chevronOpen" } else { "chevron" },
-                            RichText::strong,
+                            crate::icons::Tone::Strong,
                         );
                         let name = if dir.is_empty() { "(project root)" } else { dir };
                         let token = if open { "chevronOpen" } else { "chevron" };
@@ -392,7 +392,7 @@ pub fn show(
                             let chevron = crate::icons::atom_with(
                                 ui.ctx(),
                                 if open { "chevronOpen" } else { "chevron" },
-                                RichText::strong,
+                                crate::icons::Tone::Strong,
                             );
                             let token = if open { "chevronOpen" } else { "chevron" };
                             let spoken = format!("{} {shown}", crate::icons::glyph(ui.ctx(), token));

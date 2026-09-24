@@ -61,6 +61,8 @@ pub enum Action {
     /// Undo or redo the last file operation made from the tree.
     Undo,
     Redo,
+    /// Move the whole tree to the window's other side.
+    MoveToOtherSide,
 }
 
 /// A tree item being dragged (egui's drag-and-drop payload).
@@ -100,6 +102,12 @@ pub struct History {
     pub can_redo: bool,
 }
 
+/// What moving the tree to the window's other side is called, wherever it is offered.
+#[must_use]
+pub fn move_label(on_right: bool) -> &'static str {
+    if on_right { "Move File Tree to the Left" } else { "Move File Tree to the Right" }
+}
+
 /// One project's tree.
 pub struct Explorer {
     pub root: PathBuf,
@@ -117,6 +125,8 @@ pub struct Explorer {
     drop_target: Option<PathBuf>,
     /// This frame's undo state, for the menus.
     history: History,
+    /// The tree sits on the window's right, for the menus' offer to move it.
+    pub on_right: bool,
 }
 
 impl Explorer {
@@ -136,6 +146,7 @@ impl Explorer {
             clipboard: None,
             drop_target: None,
             history: History::default(),
+            on_right: false,
         }
     }
 
@@ -235,7 +246,9 @@ impl Explorer {
         }
         let hidden: BTreeSet<String> = hidden_paths.iter().cloned().collect();
         let rows = self.visible_rows(rules, exclude, &hidden);
-        let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
+        // Each row is as tall as its name's button.
+        let row_h = (ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y)
+            .max(ui.spacing().interact_size.y);
 
         if rows.is_empty() {
             if let Some(error) = self.listings.get(&self.root).and_then(|l| l.error.clone()) {
@@ -245,6 +258,9 @@ impl Explorer {
             }
         }
 
+        // Rows touch, so a hover or selection reads as one band (and the rows shown are counted
+        // with the same spacing they are drawn with).
+        let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
         egui::ScrollArea::vertical().id_salt(("explorer", &self.root)).auto_shrink([false, false]).show_rows(
             ui,
             row_h,
@@ -257,6 +273,7 @@ impl Explorer {
                 }
             },
         );
+        ui.spacing_mut().item_spacing.y = spacing;
         // Right-clicking empty space offers creation at the root.
         background.context_menu(|ui| {
             if ui.button("New File").clicked() {
@@ -271,6 +288,8 @@ impl Explorer {
             self.paste_item(ui, &root, &mut actions);
             ui.separator();
             history_items(ui, history, &mut actions);
+            ui.separator();
+            side_item(ui, self.on_right, &mut actions);
         });
         // A drag released below the rows lands in the root.
         if dragging.is_some()
@@ -396,8 +415,8 @@ impl Explorer {
         accent: Color32,
         actions: &mut Vec<Action>,
     ) {
-        let indent = 14.0 * row.depth as f32;
-        ui.horizontal(|ui| {
+        let indent = INDENT * row.depth as f32;
+        let drawn = ui.horizontal(|ui| {
             ui.add_space(indent + 4.0);
             let editing_this = match &self.edit {
                 Some(Edit::Rename { path, .. }) => !row.creating && path == &row.entry.path,
@@ -418,11 +437,17 @@ impl Explorer {
             let chevron = if chevron.is_empty() {
                 egui::Atom::from("")
             } else {
-                crate::icons::atom_with(ui.ctx(), chevron, RichText::weak)
+                crate::icons::atom_with(ui.ctx(), chevron, crate::icons::Tone::Weak)
             };
             // Named as before: the icon's glyph and the name, whether the icon draws as an image.
             let spoken = format!("{} {}", crate::icons::glyph(ui.ctx(), icon), entry.name);
-            let icon = crate::icons::atom(ui.ctx(), icon);
+            // Folders in the project's colour; files muted, by their kind.
+            let icon = if entry.is_dir {
+                crate::icons::kind_atom(ui.ctx(), icon, icon, accent.gamma_multiply(0.9))
+            } else {
+                let muted = ui.visuals().weak_text_color();
+                crate::icons::kind_atom(ui.ctx(), file_token(&entry.name), icon, muted)
+            };
             // The chevron opens and closes a folder, as a click on its name does.
             let toggle = ui.add_sized(
                 egui::vec2(12.0, ui.spacing().interact_size.y),
@@ -454,10 +479,15 @@ impl Explorer {
             if entry.is_symlink {
                 text = text.italics();
             }
-            let label = egui::Button::selectable(selected, (icon, text))
+            // The name's button fills the row: hover, selection and clicks reach its full width.
+            let label = egui::Button::selectable(selected, (icon, text, egui::Atom::grow()))
                 .frame_when_inactive(false)
+                .min_size(egui::vec2(ui.available_width(), 0.0))
                 .sense(Sense::click_and_drag());
             let response = ui.add(label);
+            if entry.is_dir && ui.rect_contains_pointer(response.rect) && dragging_nothing(ui) {
+                self.row_actions(ui, response.rect, &entry.path, &entry.name);
+            }
             response.widget_info(|| {
                 egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, &spoken)
             });
@@ -574,8 +604,39 @@ impl Explorer {
                     actions.push(Action::Hide(rel));
                     ui.close();
                 }
+                ui.separator();
+                side_item(ui, self.on_right, actions);
             });
         });
+        // A faint line down each level a row is nested in, so the tree's shape reads at a glance.
+        let rect = drawn.response.rect;
+        let stroke =
+            egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color.gamma_multiply(0.7));
+        for level in 0..row.depth {
+            let x = rect.left() + 4.0 + INDENT * level as f32 + 6.0;
+            ui.painter().vline(x, rect.y_range(), stroke);
+        }
+    }
+
+    /// A folder row's own buttons, shown while the pointer is over it: a new file or folder in it.
+    fn row_actions(&mut self, ui: &mut Ui, row: Rect, dir: &Path, name: &str) {
+        let side = ui.spacing().interact_size.y;
+        let mut right = row.right() - 4.0;
+        for (token, what, folder) in [("newFolder", "New Folder", true), ("newFile", "New File", false)] {
+            let rect = Rect::from_center_size(
+                egui::pos2(right - side / 2.0, row.center().y),
+                egui::vec2(side, side),
+            );
+            right -= side + 2.0;
+            let icon = crate::icons::atom_with(ui.ctx(), token, crate::icons::Tone::Weak);
+            let button = ui.put(rect, egui::Button::new(icon).frame_when_inactive(false));
+            let label = format!("{what} in {name}");
+            button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+            if button.on_hover_text(label.clone()).clicked() {
+                self.expanded.insert(dir.to_path_buf());
+                self.begin_create(dir.to_path_buf(), folder);
+            }
+        }
     }
 
     fn edit_ui(&mut self, ui: &mut Ui, rules: &PathRules, actions: &mut Vec<Action>) {
@@ -632,6 +693,14 @@ fn chord(ui: &Ui, id: &str) -> String {
 }
 
 /// Undo and Redo, disabled when there is nothing to undo or redo.
+/// Wherever the tree is right-clicked, it offers to move to the window's other side.
+fn side_item(ui: &mut Ui, on_right: bool, actions: &mut Vec<Action>) {
+    if ui.button(move_label(on_right)).clicked() {
+        actions.push(Action::MoveToOtherSide);
+        ui.close();
+    }
+}
+
 fn history_items(ui: &mut Ui, history: History, actions: &mut Vec<Action>) {
     let (undo, redo) = (chord(ui, "file.undo"), chord(ui, "file.redo"));
     if ui.add_enabled(history.can_undo, egui::Button::new("Undo").shortcut_text(undo)).clicked() {
@@ -641,6 +710,42 @@ fn history_items(ui: &mut Ui, history: History, actions: &mut Vec<Action>) {
     if ui.add_enabled(history.can_redo, egui::Button::new("Redo").shortcut_text(redo)).clicked() {
         actions.push(Action::Redo);
         ui.close();
+    }
+}
+
+/// How far each level of the tree is indented.
+const INDENT: f32 = 14.0;
+
+fn dragging_nothing(ui: &Ui) -> bool {
+    egui::DragAndDrop::payload::<TreeDrag>(ui.ctx()).is_none()
+}
+
+/// The icon token for a file of this name: its kind, by its extension or a well-known name.
+#[must_use]
+pub fn file_token(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    let extension = lower.rsplit_once('.').map_or("", |(_, e)| e);
+    match extension {
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "py" | "go" | "c" | "h" | "cc" | "cpp"
+        | "hpp" | "java" | "kt" | "kts" | "swift" | "rb" | "php" | "cs" | "lua" | "zig" | "dart"
+        | "scala" | "ex" | "exs" | "hs" | "ml" | "vue" | "svelte" | "html" | "htm" | "css" | "scss"
+        | "sass" | "less" | "sql" => "fileCode",
+        "json" | "jsonc" | "json5" => "fileJson",
+        "md" | "markdown" | "txt" | "rst" | "adoc" => "fileText",
+        "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "bmp" | "ico" | "avif" | "tif" | "tiff" => {
+            "fileImage"
+        }
+        "sh" | "bash" | "zsh" | "fish" | "ps1" | "psm1" | "bat" | "cmd" => "fileTerminal",
+        "toml" | "yaml" | "yml" | "ini" | "cfg" | "conf" | "env" | "xml" | "plist" | "properties"
+        | "editorconfig" | "gitignore" | "gitattributes" | "gitmodules" | "dockerignore" => "fileCog",
+        "zip" | "tar" | "gz" | "tgz" | "xz" | "bz2" | "7z" | "rar" | "zst" => "fileArchive",
+        "csv" | "tsv" | "xlsx" | "xls" | "ods" => "fileSpreadsheet",
+        "lock" => "fileLock",
+        _ => match lower.as_str() {
+            "license" | "notice" | "readme" | "changelog" | "authors" => "fileText",
+            "dockerfile" | "makefile" | "justfile" => "fileCog",
+            _ => "file",
+        },
     }
 }
 
@@ -734,6 +839,21 @@ pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn files_take_their_kinds_icon_by_extension_or_well_known_name() {
+        assert_eq!(file_token("main.rs"), "fileCode");
+        assert_eq!(file_token("package.json"), "fileJson");
+        assert_eq!(file_token("README.md"), "fileText");
+        assert_eq!(file_token("LICENSE"), "fileText");
+        assert_eq!(file_token("logo.SVG"), "fileImage");
+        assert_eq!(file_token("build.sh"), "fileTerminal");
+        assert_eq!(file_token("Cargo.toml"), "fileCog");
+        assert_eq!(file_token(".gitignore"), "fileCog");
+        assert_eq!(file_token("Makefile"), "fileCog");
+        assert_eq!(file_token("Cargo.lock"), "fileLock");
+        assert_eq!(file_token("notes"), "file");
+    }
 
     #[test]
     fn natural_order() {

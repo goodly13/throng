@@ -462,10 +462,26 @@ missing. [Open work](#open-work) collects every gap in one list.
 
 - **FR-052** Side columns. The projects list and the file tree each sit on the left or the right
   of the window: `appearance.projectsSide` and `appearance.fileTreeSide`, both *left* by default.
-  The View menu has *File Tree on the Right* and *Projects on the Right*. Right-clicking the file
-  tree's title offers the move too. The projects list is outermost when both share a side. The
+  The View menu has *File Tree on the Right* and *Projects on the Right*. Right-clicking anywhere
+  in the file tree (its title, a row, or the space below the rows) offers the move too, as the
+  last item of its menu. The projects list is outermost when both share a side. The
   project name in the tree's header is cut short with an ellipsis rather than drawn under its
   buttons.
+- **FR-053** The look, after shadcn/ui.
+  - **Type and icons.** The interface is set in Inter (bundled; egui's own fonts after it for
+    symbols and emoji), section titles in Inter SemiBold as small spaced capitals. throng's own
+    icons are Lucide's (bundled SVGs), drawn in the text's colour. Their licences are in `NOTICE`.
+  - **Controls.** Corners are rounded (6 px, menus and windows 8 px), borders are hairlines, and
+    icon buttons show a frame only under the pointer. The side columns and the status bar take
+    the theme's `sidebarBg` and `statusBarBg`.
+  - **File tree.** A row's full width is its own to hover, select and click, and rows touch.
+    Faint guides mark each level of nesting. Folders are drawn in the project's colour, and files
+    in the muted text colour with an icon for their kind (code, JSON, text, image, script,
+    configuration, archive, spreadsheet, lock file). While the pointer is over a folder's row, it
+    shows its own *New File in …* and *New Folder in …* buttons.
+  - **Tabs.** The open workspace tab reads strong over a line in the project's colour; the others
+    are muted. A panel's open tab merges with the panel, and the focused panel's tab is outlined
+    in the project's colour.
 
 - **FR-039** Settings MUST be declared once, as metadata.
   - A missing file is seeded.
@@ -523,10 +539,11 @@ missing. [Open work](#open-work) collects every gap in one list.
   - **Images.** An image is an SVG or PNG file inside the pack's folder (links followed), of at
     most 1 MiB, drawn at the size of the text beside it and named for assistive technology by the
     icon's label. Controls keep their accessible names whichever way their icon draws.
-  - **Fallback.** A token keeps throng's own glyph if the pack leaves it out, or gives a glyph the
-    fonts cannot draw or an image that cannot be used (missing, outside the pack, too large, or of
-    another kind). One notice says which tokens fell back. An image that cannot be decoded draws the
-    glyph instead: the pack's, when it gives one beside the image, else throng's.
+  - **Fallback.** A token keeps throng's own icon (FR-053) if the pack leaves it out, or gives a
+    glyph the fonts cannot draw or an image that cannot be used (missing, outside the pack, too
+    large, or of another kind). One notice says which tokens fell back. An image that cannot be
+    decoded draws the glyph instead: the pack's, when it gives one beside the image, else
+    throng's. A pack that sets the `file` icon draws it for every kind of file.
 - **FR-044** Every glyph drawn as text MUST exist in the bundled fonts, and a test enforces it.
 
 ### Packaging

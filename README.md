@@ -44,7 +44,9 @@ never open a release build's data.
   system open in editors. With the tree focused, Ctrl+Z and Ctrl+Y undo and redo moves, renames and
   deletes, even after a restart. An undo that no longer matches the disk is refused, with the reason.
 - **Workspace**: tabs run across the top, and each tab is a dock of panels. Drag a panel's tab to
-  split or stack it. Right-click a panel tab to split, rename, restart or kill it.
+  split or stack it. Right-click a panel tab to split, rename, restart or kill it. The projects
+  list and the file tree can each sit on either side of the window: see the View menu, or
+  right-click the tree.
 - **Terminals**: when you close throng with a command running, it asks first. Busy terminals keep
   running and reattach with their output when you reopen. Idle shells close with the app and start
   fresh next time, in the folder they were last working in. On Windows, start throng as

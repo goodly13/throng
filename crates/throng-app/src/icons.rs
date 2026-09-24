@@ -1,20 +1,65 @@
-//! Icons: glyphs by token from the icon pack in force, and icons drawn as shapes for symbols the
-//! bundled fonts do not have (a magnifier has no glyph in egui's fonts). Both keep the host
-//! control's text colour, so themes colour them like text.
+//! Icons: throng's own are Lucide's (ISC), bundled as SVGs and drawn in the text's colour. An icon
+//! pack can replace any of them with a glyph or an image of its own, and a token with no image
+//! falls back to its glyph. The painted icons are for symbols neither has.
 
 use std::path::Path;
 use std::sync::Arc;
 
-use egui::{Color32, Context, Id, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
+use egui::{Color32, Context, Id, Rect, Response, Sense, Stroke, Ui, vec2};
 use throng_core::icons::{IconPack, IconSet};
 
 fn set_id() -> Id {
     Id::new("throng-icons")
 }
 
-/// Make `set` the glyphs every icon is drawn with.
+/// throng's own icons, by token: Lucide's, drawn white so a tint gives them any colour.
+const LUCIDE: &[(&str, &[u8])] = &[
+    ("folder", include_bytes!("../assets/lucide/folder.svg")),
+    ("folderOpen", include_bytes!("../assets/lucide/folder-open.svg")),
+    ("file", include_bytes!("../assets/lucide/file.svg")),
+    ("chevron", include_bytes!("../assets/lucide/chevron-right.svg")),
+    ("chevronOpen", include_bytes!("../assets/lucide/chevron-down.svg")),
+    ("newFile", include_bytes!("../assets/lucide/file-plus.svg")),
+    ("newFolder", include_bytes!("../assets/lucide/folder-plus.svg")),
+    ("refresh", include_bytes!("../assets/lucide/refresh-cw.svg")),
+    ("add", include_bytes!("../assets/lucide/plus.svg")),
+    ("dismiss", include_bytes!("../assets/lucide/x.svg")),
+    ("retry", include_bytes!("../assets/lucide/rotate-ccw.svg")),
+    ("findNext", include_bytes!("../assets/lucide/arrow-down.svg")),
+    ("findPrevious", include_bytes!("../assets/lucide/arrow-up.svg")),
+    ("back", include_bytes!("../assets/lucide/arrow-left.svg")),
+    ("forward", include_bytes!("../assets/lucide/arrow-right.svg")),
+    // Not a pack's to change: kinds of file, and symbols with no glyph.
+    ("search", include_bytes!("../assets/lucide/search.svg")),
+    ("terminal", include_bytes!("../assets/lucide/square-terminal.svg")),
+    ("preview", include_bytes!("../assets/lucide/eye.svg")),
+    ("fileCode", include_bytes!("../assets/lucide/file-code.svg")),
+    ("fileJson", include_bytes!("../assets/lucide/file-json.svg")),
+    ("fileText", include_bytes!("../assets/lucide/file-text.svg")),
+    ("fileImage", include_bytes!("../assets/lucide/file-image.svg")),
+    ("fileTerminal", include_bytes!("../assets/lucide/file-terminal.svg")),
+    ("fileCog", include_bytes!("../assets/lucide/file-cog.svg")),
+    ("fileArchive", include_bytes!("../assets/lucide/file-archive.svg")),
+    ("fileSpreadsheet", include_bytes!("../assets/lucide/file-spreadsheet.svg")),
+    ("fileLock", include_bytes!("../assets/lucide/file-lock.svg")),
+];
+
+fn lucide_uri(token: &str) -> Option<String> {
+    LUCIDE.iter().any(|(t, _)| *t == token).then(|| format!("bytes://throng/icons/{token}.svg"))
+}
+
+/// Make `set` the glyphs every icon is drawn with, and throng's own icons loadable.
 pub fn install(ctx: &Context, set: Arc<IconSet>) {
     ctx.data_mut(|d| d.insert_temp(set_id(), set));
+    let installed = Id::new("throng-icons-installed");
+    if !ctx.data(|d| d.get_temp::<bool>(installed).unwrap_or(false)) {
+        for (token, svg) in LUCIDE {
+            // Their strokes are `currentColor`; white, so the tint alone decides the colour.
+            let white = String::from_utf8_lossy(svg).replace("currentColor", "#ffffff");
+            ctx.include_bytes(format!("bytes://throng/icons/{token}.svg"), white.into_bytes());
+        }
+        ctx.data_mut(|d| d.insert_temp(installed, true));
+    }
 }
 
 /// The glyph for an icon token.
@@ -24,22 +69,70 @@ pub fn glyph(ctx: &Context, token: &str) -> String {
         .map_or_else(|| IconSet::default().get(token).to_owned(), |set| set.get(token).to_owned())
 }
 
-/// What draws the icon for `token`, for a button or label: the pack's image, sized to the text and
-/// named for assistive technology, when it has one that loads; otherwise the glyph.
-#[must_use]
-pub fn atom(ctx: &Context, token: &str) -> egui::Atom<'static> {
-    atom_with(ctx, token, |text| text)
+/// Which of the text's colours an icon takes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tone {
+    #[default]
+    Text,
+    Weak,
+    Strong,
 }
 
-/// [`atom`], with the glyph's text styled by `style` (an image is drawn as it is).
-pub fn atom_with(
-    ctx: &Context,
-    token: &str,
-    style: impl FnOnce(egui::RichText) -> egui::RichText,
-) -> egui::Atom<'static> {
+impl Tone {
+    fn colour(self, visuals: &egui::Visuals) -> Color32 {
+        match self {
+            Self::Text => visuals.text_color(),
+            Self::Weak => visuals.weak_text_color(),
+            Self::Strong => visuals.strong_text_color(),
+        }
+    }
+
+    fn style(self, text: egui::RichText) -> egui::RichText {
+        match self {
+            Self::Text => text,
+            Self::Weak => text.weak(),
+            Self::Strong => text.strong(),
+        }
+    }
+}
+
+/// The size an icon is drawn at: the height of a button's text.
+fn icon_size(ctx: &Context) -> f32 {
+    ctx.global_style().text_styles.get(&egui::TextStyle::Button).map_or(14.0, |f| f.size)
+}
+
+/// throng's own image for `token` in `colour`, when it has one.
+#[must_use]
+pub fn own_image(ctx: &Context, token: &str, colour: Color32) -> Option<egui::Image<'static>> {
+    let size = icon_size(ctx);
+    let name = throng_core::icons::ICONS.iter().find(|i| i.token == token).map_or(token, |i| i.label);
+    Some(egui::Image::new(lucide_uri(token)?).fit_to_exact_size(vec2(size, size)).tint(colour).alt_text(name))
+}
+
+/// The icon for a kind of thing (`kind`, such as `fileJson`), in `colour`, standing in for the
+/// pack token `token` (`file`): a pack that chose that token's icon draws it for every kind.
+#[must_use]
+pub fn kind_atom(ctx: &Context, kind: &str, token: &str, colour: Color32) -> egui::Atom<'static> {
+    let chosen = ctx.data(|d| d.get_temp::<Arc<IconSet>>(set_id())).is_some_and(|s| s.chosen(token));
+    if !chosen && let Some(image) = own_image(ctx, kind, colour) {
+        return image.into();
+    }
+    atom(ctx, token)
+}
+
+/// What draws the icon for `token`, for a button or label: the pack's image or glyph when it chose
+/// one, else throng's own icon, else the glyph.
+#[must_use]
+pub fn atom(ctx: &Context, token: &str) -> egui::Atom<'static> {
+    atom_with(ctx, token, Tone::Text)
+}
+
+/// [`atom`] in one of the text's colours.
+#[must_use]
+pub fn atom_with(ctx: &Context, token: &str, tone: Tone) -> egui::Atom<'static> {
     let set = ctx.data(|d| d.get_temp::<Arc<IconSet>>(set_id()));
     if let Some(path) = set.as_ref().and_then(|s| s.image(token)) {
-        let size = ctx.global_style().text_styles.get(&egui::TextStyle::Button).map_or(14.0, |f| f.size);
+        let size = icon_size(ctx);
         let name = throng_core::icons::ICONS.iter().find(|i| i.token == token).map_or(token, |i| i.label);
         let image = egui::Image::new(crate::preview::file_uri(path))
             .fit_to_exact_size(vec2(size, size))
@@ -49,7 +142,11 @@ pub fn atom_with(
             return image.into();
         }
     }
-    style(egui::RichText::new(glyph(ctx, token))).into()
+    let chosen = set.as_ref().is_some_and(|s| s.chosen(token));
+    if !chosen && let Some(image) = own_image(ctx, token, tone.colour(&ctx.global_style().visuals)) {
+        return image.into();
+    }
+    tone.style(egui::RichText::new(glyph(ctx, token))).into()
 }
 
 /// The largest image an icon pack may use.
@@ -127,7 +224,8 @@ fn paint(ui: &Ui, icon: Icon, rect: Rect, colour: Color32) {
 /// A small button showing the icon for `token`, named `name` for assistive technology and
 /// enabled or not.
 pub fn token_button(ui: &mut Ui, token: &str, name: &str, enabled: bool) -> Response {
-    let response = ui.add_enabled(enabled, egui::Button::new(atom(ui.ctx(), token)).small());
+    let button = egui::Button::new(atom(ui.ctx(), token)).small().frame_when_inactive(false);
+    let response = ui.add_enabled(enabled, button);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
     response
 }
@@ -138,10 +236,19 @@ pub fn button(ui: &mut Ui, icon: Icon, name: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::click());
     let visuals = ui.style().interact(&response);
     if response.hovered() {
-        ui.painter().rect_filled(rect, 3.0, visuals.weak_bg_fill);
+        ui.painter().rect_filled(rect, 4.0, visuals.weak_bg_fill);
     }
-    paint(ui, icon, rect.shrink(2.0), visuals.fg_stroke.color);
+    let token = match icon {
+        Icon::Search => "search",
+    };
+    let colour = visuals.fg_stroke.color;
+    match own_image(ui.ctx(), token, colour) {
+        Some(image) => {
+            let side = icon_size(ui.ctx());
+            image.paint_at(ui, Rect::from_center_size(rect.center(), vec2(side, side)));
+        }
+        None => paint(ui, icon, rect.shrink(2.0), colour),
+    }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
-    let _ = pos2(0.0, 0.0);
     response
 }
