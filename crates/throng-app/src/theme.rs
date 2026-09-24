@@ -2,7 +2,12 @@
 //! and syntax colours. The project colour stays the project's mark (its dot, its pane border); the
 //! theme owns everything else, so a theme reads the same whichever project is open.
 
-use egui::{Color32, Context, Stroke, ThemePreference, Visuals};
+use std::sync::Arc;
+
+use egui::{
+    Color32, Context, CornerRadius, FontFamily, FontId, Margin, RichText, Shadow, Stroke, TextStyle,
+    ThemePreference, Visuals, vec2,
+};
 use throng_core::project::Colour;
 use throng_core::theme::Theme;
 use throng_editor::highlight::{SyntaxColours, build_theme};
@@ -16,6 +21,9 @@ pub struct Look {
     pub name: String,
     pub dark: bool,
     pub visuals: Visuals,
+    /// The side columns' ground (the projects list and the file tree).
+    pub sidebar: Color32,
+    pub status_bar: Color32,
     pub code: CodeColours,
     pub palette: Palette,
     pub syntax: SyntaxColours,
@@ -28,6 +36,8 @@ impl Look {
             name: theme.name.clone(),
             dark: theme.is_dark(),
             visuals: visuals(theme),
+            sidebar: token(theme, "sidebarBg"),
+            status_bar: token(theme, "statusBarBg"),
             code: code_colours(theme),
             palette: palette(theme),
             syntax: syntax_colours(theme),
@@ -53,11 +63,70 @@ pub fn apply(ctx: &Context, look: &Look, ui_scale: f32) {
     // slots is live, and both hold the theme's visuals.
     ctx.set_theme(if look.dark { ThemePreference::Dark } else { ThemePreference::Light });
     for slot in [egui::Theme::Dark, egui::Theme::Light] {
-        ctx.style_mut_of(slot, |style| style.visuals = look.visuals.clone());
+        ctx.style_mut_of(slot, |style| {
+            style.visuals = look.visuals.clone();
+            proportions(style);
+        });
     }
     if (ctx.zoom_factor() - ui_scale).abs() > f32::EPSILON {
         ctx.set_zoom_factor(ui_scale);
     }
+}
+
+/// The interface's measure: text sizes, and the room between and inside controls.
+fn proportions(style: &mut egui::Style) {
+    let s = &mut style.spacing;
+    s.item_spacing = vec2(8.0, 4.0);
+    s.button_padding = vec2(6.0, 3.0);
+    s.menu_margin = Margin::same(6);
+    s.window_margin = Margin::same(12);
+    s.icon_spacing = 6.0;
+    s.indent = 16.0;
+    let heading = FontFamily::Name(HEADING.into());
+    style.text_styles = [
+        (TextStyle::Small, FontId::proportional(10.5)),
+        (TextStyle::Body, FontId::proportional(13.0)),
+        (TextStyle::Button, FontId::proportional(13.0)),
+        (TextStyle::Heading, FontId::new(18.0, heading)),
+        (TextStyle::Monospace, FontId::monospace(12.5)),
+    ]
+    .into();
+}
+
+/// The family section titles and headings are set in: Inter SemiBold.
+pub const HEADING: &str = "heading";
+
+/// The interface's fonts: Inter, then egui's own for the symbols and emoji Inter has not.
+pub fn install_fonts(ctx: &Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "Inter".into(),
+        Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Inter-Regular.ttf"))),
+    );
+    fonts.font_data.insert(
+        "Inter SemiBold".into(),
+        Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Inter-SemiBold.ttf"))),
+    );
+    let fallbacks = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    fonts.families.insert(
+        FontFamily::Proportional,
+        std::iter::once("Inter".to_owned()).chain(fallbacks.iter().cloned()).collect(),
+    );
+    fonts.families.insert(
+        FontFamily::Name(HEADING.into()),
+        std::iter::once("Inter SemiBold".to_owned()).chain(fallbacks).collect(),
+    );
+    ctx.set_fonts(fonts);
+}
+
+/// A column's or group's title: small, spaced capitals in the muted text colour.
+#[must_use]
+pub fn section_title(ui: &egui::Ui, text: &str) -> RichText {
+    RichText::new(text.to_uppercase())
+        .family(FontFamily::Name(HEADING.into()))
+        .size(11.0)
+        .extra_letter_spacing(0.6)
+        .color(ui.visuals().weak_text_color())
 }
 
 #[must_use]
@@ -102,6 +171,12 @@ pub fn visuals(theme: &Theme) -> Visuals {
     v.selection.bg_fill = blend(accent, surface, 0.45);
     v.selection.stroke = Stroke::new(1.0, text);
     v.text_cursor.stroke.color = t("editorCursor");
+    // Rounded, hairline-bordered and lightly lifted, in the manner of shadcn/ui.
+    v.window_corner_radius = CornerRadius::same(8);
+    v.menu_corner_radius = CornerRadius::same(8);
+    let shadow = Color32::from_black_alpha(if dark { 90 } else { 28 });
+    v.window_shadow = Shadow { offset: [0, 8], blur: 24, spread: 0, color: shadow };
+    v.popup_shadow = Shadow { offset: [0, 4], blur: 12, spread: 0, color: shadow };
 
     let w = &mut v.widgets;
     w.noninteractive.bg_fill = t("appBg");
@@ -123,6 +198,14 @@ pub fn visuals(theme: &Theme) -> Visuals {
     w.open.weak_bg_fill = active;
     w.open.bg_stroke = Stroke::new(1.0, border);
     w.open.fg_stroke = Stroke::new(1.0, text);
+    for state in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+        state.corner_radius = CornerRadius::same(6);
+    }
+    // Controls show a frame when they are hovered or pressed, not at rest.
+    w.inactive.bg_stroke = Stroke::new(1.0, blend(border, surface, 0.6));
+    w.hovered.bg_stroke = Stroke::new(1.0, border);
+    w.hovered.fg_stroke = Stroke::new(1.0, text);
+    w.active.fg_stroke = Stroke::new(1.0, text);
     v
 }
 

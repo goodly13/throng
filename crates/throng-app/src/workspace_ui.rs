@@ -563,6 +563,7 @@ pub fn show(
     let mut style = egui_dock::Style::from_egui(ui.style().as_ref());
     style.tab_bar.fill_tab_bar = false;
     style.tab.tab_body.inner_margin = egui::Margin::ZERO;
+    dock_look(&mut style, ui.visuals(), crate::theme::to_color32(viewer.ctx.project.colour));
     DockArea::new(dock)
         .id(Id::new(("dock", tab_id)))
         .style(style)
@@ -631,11 +632,17 @@ fn tab_strip(
                 continue;
             }
             let selected = Some(id) == active;
-            let text = if selected { RichText::new(&title).strong() } else { RichText::new(&title) };
-            let response = ui.add(egui::Button::selectable(selected, text));
+            // The open tab reads strong over the project's colour; the rest are muted, with a soft
+            // ground only under the pointer.
+            let text = if selected {
+                RichText::new(&title).color(ui.visuals().strong_text_color())
+            } else {
+                RichText::new(&title).color(ui.visuals().weak_text_color())
+            };
+            let response = ui.add(egui::Button::new(text).frame_when_inactive(false));
             if selected {
                 let r = response.rect;
-                ui.painter().hline(r.x_range(), r.bottom() - 1.0, egui::Stroke::new(2.0, accent));
+                ui.painter().hline(r.x_range().shrink(4.0), r.bottom() - 1.0, egui::Stroke::new(2.0, accent));
             }
             if response.clicked() {
                 ws.layout.active_tab = Some(id);
@@ -659,11 +666,53 @@ fn tab_strip(
                 }
             });
         }
-        if ui.button(crate::icons::atom(ui.ctx(), "add")).on_hover_text("New tab with a terminal").clicked() {
+        if crate::icons::token_button(ui, "add", "New Tab", true)
+            .on_hover_text("New tab with a terminal")
+            .clicked()
+        {
             ctx.actions.push(PanelAction::NewTab);
         }
     });
     ui.add_space(2.0);
+}
+
+/// The panels' tabs: open ones merge with their panel, the rest are muted on the bar, and the focused
+/// panel's tab is outlined in the project's colour.
+fn dock_look(style: &mut egui_dock::Style, visuals: &egui::Visuals, accent: Color32) {
+    let (text, muted, strong) =
+        (visuals.text_color(), visuals.weak_text_color(), visuals.strong_text_color());
+    let body = visuals.extreme_bg_color;
+    let border = visuals.widgets.noninteractive.bg_stroke.color;
+    let top = egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 };
+    style.tab_bar.bg_fill = visuals.panel_fill;
+    style.tab_bar.hline_color = border;
+    style.tab_bar.height = 30.0;
+    let t = &mut style.tab;
+    for s in [&mut t.inactive, &mut t.inactive_with_kb_focus] {
+        s.bg_fill = visuals.panel_fill;
+        s.text_color = muted;
+        s.outline_color = Color32::TRANSPARENT;
+        s.corner_radius = top;
+    }
+    t.hovered.bg_fill = visuals.widgets.hovered.weak_bg_fill;
+    t.hovered.text_color = text;
+    t.hovered.corner_radius = top;
+    for s in [&mut t.active, &mut t.active_with_kb_focus] {
+        s.bg_fill = body;
+        s.text_color = text;
+        s.outline_color = border;
+        s.corner_radius = top;
+    }
+    for s in [&mut t.focused, &mut t.focused_with_kb_focus] {
+        s.bg_fill = body;
+        s.text_color = strong;
+        s.outline_color = accent;
+        s.corner_radius = top;
+    }
+    style.buttons.close_tab_color = muted;
+    style.buttons.close_tab_active_color = text;
+    style.buttons.add_tab_color = muted;
+    style.buttons.add_tab_active_color = text;
 }
 
 fn picker_ui(ui: &mut Ui, panel: PanelId, ctx: &mut PanelCtx<'_>) {

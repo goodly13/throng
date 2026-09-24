@@ -102,6 +102,8 @@ fn is_image(value: &str) -> bool {
 pub struct IconSet {
     glyphs: BTreeMap<&'static str, String>,
     images: BTreeMap<&'static str, PathBuf>,
+    /// Tokens whose glyph the pack chose: they draw as that glyph, never as throng's own image.
+    chosen: std::collections::BTreeSet<&'static str>,
 }
 
 impl Default for IconSet {
@@ -109,6 +111,7 @@ impl Default for IconSet {
         Self {
             glyphs: ICONS.iter().map(|i| (i.token, i.glyph.to_owned())).collect(),
             images: BTreeMap::new(),
+            chosen: std::collections::BTreeSet::new(),
         }
     }
 }
@@ -129,6 +132,7 @@ impl IconSet {
             let glyph = pack.glyph(def.token);
             if let Some(glyph) = glyph.filter(|g| drawable(g)) {
                 set.glyphs.insert(def.token, glyph.to_owned());
+                set.chosen.insert(def.token);
             }
             let file = pack.images.get(def.token).and_then(|written| image(written));
             let has_image = file.is_some();
@@ -154,6 +158,13 @@ impl IconSet {
     #[must_use]
     pub fn image(&self, token: &str) -> Option<&Path> {
         self.images.get(token).map(PathBuf::as_path)
+    }
+
+    /// Whether the pack chose this token's icon (an image or a glyph), rather than leaving it to
+    /// throng's own.
+    #[must_use]
+    pub fn chosen(&self, token: &str) -> bool {
+        self.chosen.contains(token) || self.images.contains_key(token)
     }
 }
 
@@ -194,6 +205,8 @@ mod tests {
         assert_eq!((set.image("dismiss"), set.get("dismiss")), (Some(Path::new("/packs/p/x.svg")), "X"));
         assert_eq!((set.image("add"), set.get("add")), (None, "+"), "a missing image keeps throng's");
         assert_eq!(kept, ["file", "add"]);
+        assert!(set.chosen("folder") && set.chosen("refresh"), "a glyph or an image the pack chose");
+        assert!(!set.chosen("file") && !set.chosen("chevron"), "throng's own where it chose nothing usable");
         assert_eq!(IconSet::default().get("nope"), "");
     }
 }
