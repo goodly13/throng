@@ -77,15 +77,29 @@ pub struct ProjectForm {
     pub error: Option<(ProjectField, String)>,
 }
 
+/// A folder's own name, the default name of a project rooted there; empty for `/` or a drive root.
+fn folder_name(folder: &std::path::Path) -> String {
+    folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
 impl ProjectForm {
     #[must_use]
     pub fn new(index: usize, root: String) -> Self {
         let colour = Colour::parse(PALETTE[index % PALETTE.len()]).expect("palette colours parse");
-        let name = std::path::Path::new(&root)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let name = folder_name(std::path::Path::new(&root));
         Self { editing: None, name, colour: [colour.r, colour.g, colour.b], root, error: None }
+    }
+
+    /// Take `folder` as the root. A name that is blank, or was the old root's folder name, follows it.
+    pub fn choose_root(&mut self, folder: &std::path::Path) {
+        let old = folder_name(std::path::Path::new(self.root.trim()));
+        if self.name.trim().is_empty() || self.name == old {
+            self.name = folder_name(folder);
+        }
+        self.root = folder.display().to_string();
+        if self.error.as_ref().is_some_and(|(field, _)| *field == ProjectField::Root) {
+            self.error = None;
+        }
     }
 
     #[must_use]
@@ -109,6 +123,8 @@ pub enum Answer {
     None,
     Cancel,
     SaveProject,
+    /// Pick the project's root folder with the platform's folder picker.
+    BrowseRoot,
     DeleteProject(ProjectId),
     Trash,
     RenamePanel,
@@ -317,14 +333,20 @@ fn project_form(ui: &mut Ui, form: &mut ProjectForm) -> Answer {
         form.error.as_ref().filter(|(f, _)| *f == field).map(|(_, message)| message.clone())
     };
     let red = ui.visuals().error_fg_color;
+    let mut browse = false;
     egui::Grid::new("project-form").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
         let label = ui.label("Root folder");
-        ui.add(
-            egui::TextEdit::singleline(&mut form.root)
-                .hint_text("/home/me/code/my-project")
-                .desired_width(320.0),
-        )
-        .labelled_by(label.id);
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut form.root)
+                    .hint_text("/home/me/code/my-project")
+                    .desired_width(240.0),
+            )
+            .labelled_by(label.id);
+            if ui.button("Browse\u{2026}").clicked() {
+                browse = true;
+            }
+        });
         ui.end_row();
         if let Some(message) = error_for(ProjectField::Root, form) {
             ui.label("");
@@ -370,7 +392,13 @@ fn project_form(ui: &mut Ui, form: &mut ProjectForm) -> Answer {
             ("Cancel", Answer::Cancel),
         ],
     );
-    if enter && answer == Answer::None { Answer::SaveProject } else { answer }
+    if browse {
+        Answer::BrowseRoot
+    } else if enter && answer == Answer::None {
+        Answer::SaveProject
+    } else {
+        answer
+    }
 }
 
 fn language_picker(ui: &mut Ui, filter: &mut String, current: &str, overridden: bool) -> Answer {

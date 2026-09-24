@@ -44,11 +44,17 @@ impl Env {
     }
 
     fn app(&self, open: Option<PathBuf>) -> Harness<'static, ThrongApp> {
+        self.app_picking(open, None)
+    }
+
+    /// The app, with a folder picker that answers `picked` (or is cancelled, for `None`).
+    fn app_picking(&self, open: Option<PathBuf>, picked: Option<PathBuf>) -> Harness<'static, ThrongApp> {
         let services = Services {
             dirs: self.dirs.clone(),
             exe: PathBuf::from(env!("CARGO_BIN_EXE_throng")),
             open,
             screenshot: None,
+            pick_folder: Box::new(move |_| picked.clone()),
         };
         // Frames a display's length apart (kittest's default is a quarter second), so two clicks in
         // successive frames are a double-click, as they are for a person.
@@ -1628,4 +1634,54 @@ fn an_elevated_throng_keeps_administrator_rights_only_for_a_terminal_that_asks()
     harness.get_by_label("Panel 2 ADMIN");
     // And throng itself says it runs as administrator.
     harness.get_by_label("ADMIN");
+}
+
+#[test]
+fn browse_fills_the_root_folder_and_the_name_from_it() {
+    let env = Env::new();
+    let root = env.folder("picked");
+    let mut harness = env.app_picking(None, Some(root.clone()));
+    steps(&mut harness, 2);
+    harness.get_by_label("Create a project").click();
+    steps(&mut harness, 3);
+    harness.get_by_label("Browse\u{2026}").click();
+    steps(&mut harness, 3);
+    harness.get_by_label("Create Project").click();
+    steps(&mut harness, 3);
+
+    let projects = harness.state().projects();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].name, "picked");
+    assert_eq!(projects[0].root, root);
+}
+
+#[test]
+fn open_a_folder_creates_its_project() {
+    let env = Env::new();
+    let root = env.folder("opened");
+    let mut harness = env.app_picking(None, Some(root.clone()));
+    steps(&mut harness, 2);
+    harness.get_by_label("Open a Folder\u{2026}").click();
+    steps(&mut harness, 3);
+
+    let projects = harness.state().projects();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].name, "opened");
+    assert_eq!(projects[0].root, root);
+}
+
+#[test]
+fn a_folder_that_names_no_project_opens_the_dialog_rather_than_a_notice() {
+    // A desktop launcher starts throng in `/`; a filesystem root has no name to give a project.
+    let env = Env::new();
+    let top = env.folder("any").ancestors().last().unwrap().to_path_buf();
+    let mut harness = env.app_picking(None, Some(top));
+    steps(&mut harness, 2);
+    harness.get_by_label("Open a Folder\u{2026}").click();
+    steps(&mut harness, 3);
+
+    assert!(harness.state().projects().is_empty());
+    assert!(harness.state().notices().is_empty(), "the problem is shown in the dialog, not as a notice");
+    assert!(harness.query_by_label("New Project").is_some());
+    assert!(harness.query_by_label("Give the project a name.").is_some());
 }

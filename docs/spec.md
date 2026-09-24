@@ -41,8 +41,9 @@ missing. [Open work](#open-work) collects every gap in one list.
 
 ## User stories
 
-- **Open a folder as a project.** `throng <folder>`, or the New Project dialog, creates the project
-  whose root holds that folder, or activates it if it exists. Its layout opens with a terminal.
+- **Open a folder as a project.** `throng <folder>`, *Open a Folder…* on the welcome screen, or the
+  New Project dialog, creates the project whose root holds that folder, or activates it if it
+  exists. Its layout opens with a terminal.
 - **Terminals outlive the UI.** Closing throng with a command running offers exactly three choices.
   *Leave Running* keeps busy terminals and closes idle ones. On reopening, each busy terminal
   reattaches with its output, and the idle ones start fresh.
@@ -72,6 +73,13 @@ missing. [Open work](#open-work) collects every gap in one list.
   Lower-casing every path on every OS would fuse `~/Proj` and `~/proj` on Linux.
 - **FR-002** File-name validation MUST forbid only what the platform forbids: `/` and NUL on Linux
   and macOS, and the reserved characters and names on Windows.
+- **FR-051** Choosing a root folder. The New Project and Edit Project dialogs offer *Browse…*, the
+  platform's own folder picker, beside the typed path; a picked folder also names the project
+  while the name is blank or still the old folder's name. The welcome screen offers *Open a
+  Folder…* through the same picker, and *Open* for the working directory only when that folder has
+  a name: a desktop launcher starts throng in `/`, which names no project. A folder that cannot
+  become a project as it is opens the New Project dialog filled in, with the problem beside its
+  field, rather than a notice.
 
 ### Terminals and the daemon
 
