@@ -324,7 +324,9 @@ missing. [Open work](#open-work) collects every gap in one list.
 - **FR-030** The explorer MUST watch only expanded directories, because of Linux's inotify limit.
   - Copy and move MUST share one rule that refuses a folder into its own subtree.
   - A trash operation MUST report the outcome for each item.
-  - A tree row MUST take its own clicks.
+  - A tree row MUST take its own clicks. So MUST a folder's chevron, which opens and closes it as
+    a click on its name does, and the header's buttons (Find in Files, Refresh, New Folder, New
+    File). The click area behind the rows covers what is left of the panel, never the header.
 - **FR-031** Undo of tree file operations.
   - **What is recorded.** Moves, renames and deletes made from the tree go on a per-project history
     of 50. It is kept in the database and deleted with the project. Copies and new files are not
@@ -457,6 +459,13 @@ missing. [Open work](#open-work) collects every gap in one list.
       chase each other. A standalone preview is unaffected.
 
 ### Appearance and configuration
+
+- **FR-052** Side columns. The projects list and the file tree each sit on the left or the right
+  of the window: `appearance.projectsSide` and `appearance.fileTreeSide`, both *left* by default.
+  The View menu has *File Tree on the Right* and *Projects on the Right*. Right-clicking the file
+  tree's title offers the move too. The projects list is outermost when both share a side. The
+  project name in the tree's header is cut short with an ellipsis rather than drawn under its
+  buttons.
 
 - **FR-039** Settings MUST be declared once, as metadata.
   - A missing file is seeded.

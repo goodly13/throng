@@ -214,7 +214,9 @@ impl Explorer {
     ) -> Vec<Action> {
         let mut actions = Vec::new();
         self.history = history;
-        let area = ui.max_rect();
+        // What is left of the panel, not all of it: the header above already holds its buttons, and
+        // this area, registered after them, would win every click on them.
+        let area = ui.available_rect_before_wrap();
         // Registered before the rows, so a row wins every click it is under: egui gives a tie to
         // the widget registered last, and this covers them all.
         let background = ui.interact(area, ui.id().with("explorer-bg"), Sense::click());
@@ -421,10 +423,32 @@ impl Explorer {
             // Named as before: the icon's glyph and the name, whether the icon draws as an image.
             let spoken = format!("{} {}", crate::icons::glyph(ui.ctx(), icon), entry.name);
             let icon = crate::icons::atom(ui.ctx(), icon);
-            ui.add_sized(
+            // The chevron opens and closes a folder, as a click on its name does.
+            let toggle = ui.add_sized(
                 egui::vec2(12.0, ui.spacing().interact_size.y),
-                egui::Button::new(chevron).frame(false).sense(Sense::hover()),
+                egui::Button::new(chevron).frame(false).sense(if entry.is_dir {
+                    Sense::click()
+                } else {
+                    Sense::hover()
+                }),
             );
+            if entry.is_dir {
+                let name = if expanded { "Collapse" } else { "Expand" };
+                toggle.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        true,
+                        format!("{name} {}", entry.name),
+                    )
+                });
+            }
+            if toggle.clicked() {
+                if expanded {
+                    self.expanded.remove(&entry.path);
+                } else {
+                    self.expanded.insert(entry.path.clone());
+                }
+            }
             let selected = self.selected.as_ref() == Some(&entry.path);
             let mut text = RichText::new(format!(" {}", entry.name));
             if entry.is_symlink {
