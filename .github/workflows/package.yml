@@ -8,6 +8,7 @@ name: Package
 # (runnable where built, refused by Gatekeeper elsewhere) when it does not:
 #   APPLE_CERTIFICATE_P12 (base64 of a Developer ID Application .p12), APPLE_CERTIFICATE_PASSWORD,
 #   APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD.
+# A v* tag without them fails: a release never ships a .dmg that Gatekeeper refuses.
 
 on:
   workflow_dispatch:
@@ -101,6 +102,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: A release is signed and notarised
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          for name in APPLE_CERTIFICATE_P12 APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+            APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
+            test -n "${!name}" || { echo "A release needs the $name secret to notarise the .dmg." >&2; exit 1; }
+          done
+
       - name: Signing certificate
         if: env.APPLE_CERTIFICATE_P12 != ''
         run: |
@@ -129,7 +138,15 @@ jobs:
           codesign --verify --strict "$app"
           test -f "$app/Contents/Resources/NOTICE"
           test -L "$mount/Applications"
+          if [ -n "$APPLE_APP_PASSWORD" ]; then
+            spctl --assess --type execute "$app"
+          fi
           hdiutil detach "$mount"
+          if [ -n "$APPLE_APP_PASSWORD" ]; then
+            dmg=$(echo dist/throng-*-macos-universal.dmg)
+            xcrun stapler validate "$dmg"
+            spctl --assess --type open --context context:primary-signature "$dmg"
+          fi
 
       - uses: actions/upload-artifact@v6
         with:
