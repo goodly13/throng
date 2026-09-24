@@ -37,6 +37,7 @@ serde_json.workspace = true
 ropey.workspace = true
 pulldown-cmark.workspace = true
 syntect.workspace = true
+rfd.workspace = true
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["eframe"] }

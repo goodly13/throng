@@ -52,6 +52,24 @@ pub struct Services {
     pub open: Option<PathBuf>,
     /// Take a screenshot to this path after a delay, then quit (verification and CI smoke tests).
     pub screenshot: Option<(PathBuf, Duration)>,
+    /// Ask the user for a folder, starting in the given one.
+    pub pick_folder: FolderPicker,
+}
+
+/// Asks the user for a folder, starting in the given one; `None` when they cancel.
+pub type FolderPicker = Box<dyn FnMut(Option<&Path>) -> Option<PathBuf>>;
+
+/// The platform's own folder picker.
+#[must_use]
+pub fn native_folder_picker() -> FolderPicker {
+    Box::new(|start| {
+        let dialog = rfd::FileDialog::new().set_title("Choose the project's root folder");
+        let dialog = match start {
+            Some(dir) => dialog.set_directory(dir),
+            None => dialog,
+        };
+        dialog.pick_folder()
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +102,7 @@ pub struct ThrongApp {
     show_explorer: bool,
     prefs: crate::prefs::Prefs,
     screenshot: Option<(PathBuf, Instant, bool)>,
+    pick_folder: FolderPicker,
     started: Instant,
     /// The themes on offer, built in and the user's own.
     themes: crate::themes::ThemeStore,
@@ -195,7 +214,7 @@ fn read_settings(path: &Path) -> (Settings, ReadOutcome) {
 impl ThrongApp {
     /// Build the app. Any error here is a startup failure the caller reports and exits on.
     pub fn new(ctx: &Context, services: Services) -> anyhow::Result<Self> {
-        let Services { dirs, exe, open, screenshot } = services;
+        let Services { dirs, exe, open, screenshot, pick_folder } = services;
         dirs.ensure()?;
         // Images for previews and icon packs: files, https (a preview decides what it asks for),
         // decoded formats and SVG.
@@ -274,6 +293,7 @@ impl ThrongApp {
             show_explorer: true,
             prefs: crate::prefs::Prefs::default(),
             screenshot: screenshot.map(|(path, delay)| (path, Instant::now() + delay, false)),
+            pick_folder,
             started: Instant::now(),
             themes: crate::themes::ThemeStore::load(themes_dir),
             look: crate::theme::Look::default(),
@@ -600,8 +620,9 @@ impl ThrongApp {
             return;
         }
         let mut form = ProjectForm::new(self.book.projects().len(), folder.display().to_string());
-        if let Err(e) = self.save_project(&mut form) {
-            self.notices.raise(Notice::new("open-folder", Severity::Error, e.to_string()));
+        if self.save_project(&mut form).is_err() {
+            // The New Project dialog, filled in, with the problem beside its field.
+            self.dialog = Some(Dialog::Project(form));
         }
     }
 
@@ -2961,6 +2982,14 @@ impl ThrongApp {
                 self.set_language(panel, language);
                 self.focus_next = Some((crate::editor::editor_id(panel), 1));
             }
+            (Dialog::Project(mut form), Answer::BrowseRoot) => {
+                let current = PathBuf::from(form.root.trim());
+                let start = current.is_dir().then_some(current.as_path());
+                if let Some(folder) = (self.pick_folder)(start) {
+                    form.choose_root(&folder);
+                }
+                self.dialog = Some(Dialog::Project(form));
+            }
             (Dialog::Project(mut form), Answer::SaveProject) => {
                 if self.save_project(&mut form).is_err() {
                     self.dialog = Some(Dialog::Project(form));
@@ -3439,7 +3468,16 @@ impl ThrongApp {
                 self.dialog =
                     Some(Dialog::Project(ProjectForm::new(self.book.projects().len(), String::new())));
             }
+            if ui.button("Open a Folder\u{2026}").clicked()
+                && let Some(folder) = (self.pick_folder)(None)
+            {
+                self.open_folder(&folder);
+                self.apply_theme(ui.ctx());
+            }
+            // Started from a shell in a project, offer that folder; started from a desktop launcher
+            // the working directory is `/` or similar, which names no project.
             if let Ok(cwd) = std::env::current_dir()
+                && cwd.file_name().is_some()
                 && ui.button(format!("Open {}", cwd.display())).clicked()
             {
                 self.open_folder(&cwd);

@@ -122,7 +122,8 @@ fn run_ui(folder: Option<PathBuf>) -> ExitCode {
             std::env::var("THRONG_SCREENSHOT_DELAY_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(2500);
         (PathBuf::from(path), Duration::from_millis(delay))
     });
-    let services = Services { dirs, exe, open: folder, screenshot };
+    let services =
+        Services { dirs, exe, open: folder, screenshot, pick_folder: throng_app::native_folder_picker() };
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

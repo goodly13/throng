@@ -29,4 +29,4 @@ pub mod themes;
 pub mod watch;
 pub mod workspace_ui;
 
-pub use app::{Services, ThrongApp};
+pub use app::{FolderPicker, Services, ThrongApp, native_folder_picker};
