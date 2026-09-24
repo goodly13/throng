@@ -518,7 +518,8 @@ missing. [Open work](#open-work) collects every gap in one list.
   - **Linux:** a `.deb`, an AppImage and a `.tar.gz`. The `.deb` declares the X11, Wayland and
     OpenGL libraries loaded at run time, and the oldest glibc the binary needs.
   - **macOS:** a universal `throng.app` (Apple silicon and Intel) in a `.dmg`. It is signed with a
-    Developer ID and notarised when those credentials are given, and ad-hoc signed otherwise.
+    Developer ID and notarised when those credentials are given, and ad-hoc signed otherwise; a
+    release (FR-048) is always notarised.
   - **Windows:** a `.zip`, and a per-user `.msi` (built with WiX) that installs to
     `%LOCALAPPDATA%\Programs\throng` without administrator rights, adds a Start menu shortcut, and
     upgrades an older throng in place. A release build opens no console window.
@@ -529,7 +530,9 @@ missing. [Open work](#open-work) collects every gap in one list.
   UI's mount closes. The window carries throng's icon.
 - **FR-048** Publishing. A `v<version>` tag, where `<version>` is the workspace version in
   `Cargo.toml`, publishes every package as a GitHub release, once each has been installed and run
-  on its platform. A tag that names another version publishes nothing.
+  on its platform. A tag that names another version publishes nothing, and so does a tag built
+  without the Developer ID and notarisation credentials: Gatekeeper refuses an ad-hoc signed `.dmg`
+  on any Mac but the one that built it.
 
 ## Open work
 
