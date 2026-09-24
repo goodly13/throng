@@ -26,7 +26,9 @@ pub mod status_strip;
 pub mod term;
 pub mod theme;
 pub mod themes;
+pub mod update_check;
 pub mod watch;
 pub mod workspace_ui;
 
 pub use app::{FolderPicker, Services, ThrongApp, native_folder_picker};
+pub use update_check::{ReleaseCallback, ReleaseSource, github_releases};

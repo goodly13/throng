@@ -567,6 +567,14 @@ missing. [Open work](#open-work) collects every gap in one list.
   on its platform. A tag that names another version publishes nothing, and so does a tag built
   without the Developer ID and notarisation credentials: Gatekeeper refuses an ad-hoc signed `.dmg`
   on any Mac but the one that built it.
+- **FR-052** Updates. throng installs nothing itself. While `updates.check` is on (the default) it
+  asks GitHub for the latest published release at start and once a day, sending only its name
+  and version. A release newer than the one running raises one notice, *throng X.Y.Z is
+  available*, with *Download* (the release page) and *Skip This Version*; a skipped version stays
+  quiet, and a later one is announced again. No answer, or an unreadable one, says nothing. To
+  upgrade, quit with *Leave Running* and install the new package: the terminal host keeps its
+  terminals and the new throng reattaches them in the saved layout, unless the new version speaks
+  a different protocol to the host, when a notice offers to restart it, which ends its terminals.
 
 ## Open work
 

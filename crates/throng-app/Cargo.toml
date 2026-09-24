@@ -38,6 +38,7 @@ ropey.workspace = true
 pulldown-cmark.workspace = true
 syntect.workspace = true
 rfd.workspace = true
+ehttp.workspace = true
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["eframe"] }

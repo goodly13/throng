@@ -19,6 +19,7 @@ pub mod subworkspace;
 pub mod terminal;
 pub mod text;
 pub mod theme;
+pub mod update;
 pub mod workspace;
 
 pub use ids::{PanelId, ProjectId, TabId, TerminalId};

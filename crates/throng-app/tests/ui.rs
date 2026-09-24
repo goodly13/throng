@@ -2,13 +2,15 @@
 //! that type POSIX shell commands into a terminal run on Linux and macOS; the rest run everywhere.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use egui::{Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use throng_app::term::Status;
-use throng_app::{Services, ThrongApp};
+use throng_app::{ReleaseSource, Services, ThrongApp};
 use throng_core::ids::{PanelId, ProjectId};
 use throng_core::paths::PathRules;
 use throng_core::project::{ProjectBook, ProjectInput};
@@ -49,12 +51,36 @@ impl Env {
 
     /// The app, with a folder picker that answers `picked` (or is cancelled, for `None`).
     fn app_picking(&self, open: Option<PathBuf>, picked: Option<PathBuf>) -> Harness<'static, ThrongApp> {
+        // No test asks the network; the update check's own tests hand it a release.
+        self.launch(open, picked, Box::new(|done| done(None)))
+    }
+
+    /// The app, told that `tag` is the latest release; counts how often it asks.
+    fn app_released(&self, tag: &str, asked: &Arc<AtomicUsize>) -> Harness<'static, ThrongApp> {
+        let (tag, asked) = (tag.to_owned(), Arc::clone(asked));
+        self.launch(
+            None,
+            None,
+            Box::new(move |done| {
+                asked.fetch_add(1, Ordering::SeqCst);
+                done(Some(tag.clone()));
+            }),
+        )
+    }
+
+    fn launch(
+        &self,
+        open: Option<PathBuf>,
+        picked: Option<PathBuf>,
+        releases: ReleaseSource,
+    ) -> Harness<'static, ThrongApp> {
         let services = Services {
             dirs: self.dirs.clone(),
             exe: PathBuf::from(env!("CARGO_BIN_EXE_throng")),
             open,
             screenshot: None,
             pick_folder: Box::new(move |_| picked.clone()),
+            releases,
         };
         // Frames a display's length apart (kittest's default is a quarter second), so two clicks in
         // successive frames are a double-click, as they are for a person.
@@ -1755,4 +1781,57 @@ fn a_folder_rows_own_buttons_show_on_hover_and_make_things_inside_it() {
     harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "File name").type_text("inside.txt");
     harness.key_press(Key::Enter);
     wait(&mut harness, "the file inside the folder", |_| root.join("sub/inside.txt").is_file());
+}
+
+fn update_notices(app: &ThrongApp) -> Vec<String> {
+    app.notices().iter().filter(|n| n.key == "update-available").map(|n| n.message.clone()).collect()
+}
+
+#[test]
+fn a_newer_release_is_announced_once_and_a_skipped_one_is_not_again() {
+    let env = Env::new();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let newer = "v999.0.0";
+    {
+        let mut harness = env.app_released(newer, &asked);
+        steps(&mut harness, 3);
+        let running = env!("CARGO_PKG_VERSION");
+        assert_eq!(
+            update_notices(harness.state()),
+            vec![format!("throng 999.0.0 is available. This is {running}.")]
+        );
+        assert!(harness.query_by_label("Download").is_some());
+        steps(&mut harness, 30);
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "one check at start, the next a day later");
+        harness.get_by_label("Skip This Version").click();
+        steps(&mut harness, 3);
+        assert!(update_notices(harness.state()).is_empty());
+    }
+
+    let mut harness = env.app_released(newer, &asked);
+    steps(&mut harness, 5);
+    assert_eq!(asked.load(Ordering::SeqCst), 2);
+    assert!(update_notices(harness.state()).is_empty(), "the skipped release stays quiet");
+}
+
+#[test]
+fn the_running_version_or_an_older_one_is_not_announced() {
+    let env = Env::new();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let mut harness = env.app_released(&format!("v{}", env!("CARGO_PKG_VERSION")), &asked);
+    steps(&mut harness, 5);
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+    assert!(update_notices(harness.state()).is_empty());
+}
+
+#[test]
+fn with_the_check_turned_off_nothing_is_asked() {
+    let env = Env::new();
+    env.dirs.ensure().unwrap();
+    std::fs::write(env.dirs.settings_file(), r#"{"updates":{"check":false}}"#).unwrap();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let mut harness = env.app_released("v999.0.0", &asked);
+    steps(&mut harness, 5);
+    assert_eq!(asked.load(Ordering::SeqCst), 0);
+    assert!(update_notices(harness.state()).is_empty());
 }
