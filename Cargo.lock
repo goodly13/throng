@@ -3950,7 +3950,7 @@ dependencies = [
 
 [[package]]
 name = "throng-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -3982,7 +3982,7 @@ dependencies = [
 
 [[package]]
 name = "throng-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "encoding_rs",
  "serde",
@@ -3995,7 +3995,7 @@ dependencies = [
 
 [[package]]
 name = "throng-daemon"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -4016,7 +4016,7 @@ dependencies = [
 
 [[package]]
 name = "throng-editor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ropey",
  "serde",
@@ -4028,7 +4028,7 @@ dependencies = [
 
 [[package]]
 name = "throng-persistence"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rusqlite",
  "serde_json",
@@ -4040,7 +4040,7 @@ dependencies = [
 
 [[package]]
 name = "throng-platform"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "directories",
  "libc",
@@ -4053,7 +4053,7 @@ dependencies = [
 
 [[package]]
 name = "throng-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "postcard",
  "serde",
