@@ -1685,3 +1685,52 @@ fn a_folder_that_names_no_project_opens_the_dialog_rather_than_a_notice() {
     assert!(harness.query_by_label("New Project").is_some());
     assert!(harness.query_by_label("Give the project a name.").is_some());
 }
+
+/// The tree's header buttons and folder chevrons, clicked as a pointer clicks them. Assistive
+/// technology's click goes straight to a widget, so it cannot tell that another widget covers it
+/// and takes the pointer's clicks, which is how these once all did nothing.
+#[test]
+fn the_trees_header_buttons_and_folder_chevrons_take_a_pointers_clicks() {
+    let env = Env::new();
+    let (root, mut harness) = project_with(&env, &[("sub/b.txt", "b\n")]);
+    click_slowly(&mut harness, "Expand sub");
+    harness.get_by_label("🗋 b.txt");
+    click_slowly(&mut harness, "Collapse sub");
+    assert!(harness.query_by_label("🗋 b.txt").is_none(), "the chevron closes it again");
+
+    click_slowly(&mut harness, "New File");
+    steps(&mut harness, 2);
+    harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "File name").type_text("made.txt");
+    harness.key_press(Key::Enter);
+    wait(&mut harness, "the new file", |_| root.join("made.txt").is_file());
+
+    click_slowly(&mut harness, "New Folder");
+    steps(&mut harness, 2);
+    harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "Folder name").type_text("made");
+    harness.key_press(Key::Enter);
+    wait(&mut harness, "the new folder", |_| root.join("made").is_dir());
+
+    click_slowly(&mut harness, "Find in Files");
+    steps(&mut harness, 3);
+    harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "Find in files");
+}
+
+#[test]
+fn the_file_tree_moves_to_the_right_from_the_view_menu_and_stays_there() {
+    let env = Env::new();
+    let (_root, mut harness) = project_with(&env, &[("a.txt", "a\n")]);
+    let middle = 640.0;
+    assert!(harness.get_by_label("🗋 a.txt").rect().center().x < middle, "on the left to begin with");
+    click_slowly(&mut harness, "View");
+    click_slowly(&mut harness, "File Tree on the Right");
+    steps(&mut harness, 3);
+    assert!(harness.get_by_label("🗋 a.txt").rect().center().x > middle, "now on the right");
+    let written = std::fs::read_to_string(env.dirs.settings_file()).unwrap();
+    assert!(written.contains("\"fileTreeSide\": \"right\""), "{written}");
+    drop(harness);
+
+    // The next launch puts it there too.
+    let mut harness = env.app(None);
+    steps(&mut harness, 3);
+    assert!(harness.get_by_label("🗋 a.txt").rect().center().x > middle);
+}

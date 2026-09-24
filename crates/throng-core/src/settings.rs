@@ -79,6 +79,19 @@ pub const SETTINGS: &[SettingDef] = &[
         kind: SettingKind::Float { min: 0.75, max: 2.0, default: 1.0, step: 0.05 },
     },
     SettingDef {
+        key: "appearance.projectsSide",
+        label: "Projects list",
+        help: "The side of the window the projects and sub-workspaces list sits on.",
+        kind: SettingKind::Choice { options: &["left", "right"], default: "left" },
+    },
+    SettingDef {
+        key: "appearance.fileTreeSide",
+        label: "File tree",
+        help: "The side of the window the file tree sits on, inside the projects list when both share \
+               a side.",
+        kind: SettingKind::Choice { options: &["left", "right"], default: "left" },
+    },
+    SettingDef {
         key: "terminal.fontSize",
         label: "Terminal font size",
         help: "Point size of terminal text.",
@@ -533,6 +546,16 @@ impl Settings {
     #[must_use]
     pub fn ui_scale(&self) -> f32 {
         self.float("appearance.uiScale")
+    }
+    /// The projects list sits on the right of the window.
+    #[must_use]
+    pub fn projects_on_right(&self) -> bool {
+        self.text("appearance.projectsSide") == "right"
+    }
+    /// The file tree sits on the right of the window.
+    #[must_use]
+    pub fn file_tree_on_right(&self) -> bool {
+        self.text("appearance.fileTreeSide") == "right"
     }
     #[must_use]
     pub fn terminal_font_size(&self) -> f32 {

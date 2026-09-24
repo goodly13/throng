@@ -182,6 +182,11 @@ fn retarget(action: PanelAction, panel: PanelId) -> PanelAction {
 }
 
 /// A tooltip naming what a control does and, when it has one, its chord.
+/// A side column, on the right or the left.
+fn side_panel(right: bool, id: &'static str) -> egui::Panel {
+    if right { egui::Panel::right(id) } else { egui::Panel::left(id) }
+}
+
 pub(crate) fn hint(ctx: &Context, what: &str, id: &str) -> String {
     match crate::keymap::label(ctx, id) {
         chord if chord.is_empty() => what.to_owned(),
@@ -1529,6 +1534,14 @@ impl ThrongApp {
         self.hub.scrollback = self.settings.scrollback_lines();
         for explorer in self.explorers.values_mut() {
             explorer.invalidate_all();
+        }
+    }
+
+    /// Put a side column on the right or the left, and keep the choice.
+    fn set_side(&mut self, key: &str, right: bool) {
+        let side = if right { "right" } else { "left" };
+        if self.settings.set(key, throng_core::settings::SettingValue::Text(side.to_owned())) {
+            self.write_settings();
         }
     }
 
@@ -3149,6 +3162,15 @@ impl ThrongApp {
             });
             ui.menu_button("View", |ui| {
                 ui.checkbox(&mut self.show_explorer, "File Explorer");
+                ui.separator();
+                let mut tree_right = self.settings.file_tree_on_right();
+                if ui.checkbox(&mut tree_right, "File Tree on the Right").clicked() {
+                    self.set_side("appearance.fileTreeSide", tree_right);
+                }
+                let mut projects_right = self.settings.projects_on_right();
+                if ui.checkbox(&mut projects_right, "Projects on the Right").clicked() {
+                    self.set_side("appearance.projectsSide", projects_right);
+                }
             });
             ui.menu_button("Help", |ui| {
                 if ui.button("Open Logs Folder").clicked() {
@@ -3312,7 +3334,8 @@ impl ThrongApp {
     fn explorer_panel(&mut self, ui: &mut Ui, ctx: &Context) {
         let Some(project) = self.active_project().cloned() else { return };
         ui.horizontal(|ui| {
-            ui.strong(project.name.to_uppercase());
+            // Buttons first, from the right; the name takes what they leave, cut short rather than
+            // drawn under them.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let search = crate::icons::button(ui, crate::icons::Icon::Search, "Find in Files")
                     .on_hover_text(hint(ui.ctx(), "Find in Files", "search.findInFiles"));
@@ -3321,28 +3344,43 @@ impl ThrongApp {
                     self.find_in_files(ctx, false, false, None);
                 }
                 if let Some(explorer) = self.explorers.get_mut(&project.id) {
-                    if ui
-                        .small_button(crate::icons::atom(ui.ctx(), "refresh"))
+                    if crate::icons::token_button(ui, "refresh", "Refresh", true)
                         .on_hover_text("Refresh")
                         .clicked()
                     {
                         explorer.invalidate_all();
                     }
-                    if ui
-                        .small_button(crate::icons::atom(ui.ctx(), "newFolder"))
+                    if crate::icons::token_button(ui, "newFolder", "New Folder", true)
                         .on_hover_text("New folder")
                         .clicked()
                     {
                         explorer.begin_create(project.root.clone(), true);
                     }
-                    if ui
-                        .small_button(crate::icons::atom(ui.ctx(), "newFile"))
+                    if crate::icons::token_button(ui, "newFile", "New File", true)
                         .on_hover_text("New file")
                         .clicked()
                     {
                         explorer.begin_create(project.root.clone(), false);
                     }
                 }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let title = ui
+                        .add(
+                            egui::Label::new(RichText::new(project.name.to_uppercase()).strong())
+                                .truncate()
+                                .sense(egui::Sense::click()),
+                        )
+                        .on_hover_text(project.root.display().to_string());
+                    let right = self.settings.file_tree_on_right();
+                    title.context_menu(|ui| {
+                        let label =
+                            if right { "Move File Tree to the Left" } else { "Move File Tree to the Right" };
+                        if ui.button(label).clicked() {
+                            self.set_side("appearance.fileTreeSide", !right);
+                            ui.close();
+                        }
+                    });
+                });
             });
         });
         ui.separator();
@@ -3608,19 +3646,23 @@ impl eframe::App for ThrongApp {
 
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui, &mut actions));
         egui::Panel::bottom("status").exact_size(24.0).show(ui, |ui| self.status_bar(ui));
-        egui::Panel::left("sidebar").resizable(true).default_size(190.0).size_range(120.0..=360.0).show(
-            ui,
-            |ui| {
+        // The projects list is made first, so it is outermost on its side; the file tree sits
+        // inside it when they share a side.
+        side_panel(self.settings.projects_on_right(), "sidebar")
+            .resizable(true)
+            .default_size(190.0)
+            .size_range(120.0..=360.0)
+            .show(ui, |ui| {
                 self.sidebar(ui, &ctx);
-            },
-        );
+            });
         if self.show_explorer && self.book.active_id().is_some() {
-            egui::Panel::left("explorer").resizable(true).default_size(260.0).size_range(150.0..=600.0).show(
-                ui,
-                |ui| {
+            side_panel(self.settings.file_tree_on_right(), "explorer")
+                .resizable(true)
+                .default_size(260.0)
+                .size_range(150.0..=600.0)
+                .show(ui, |ui| {
                     self.explorer_panel(ui, &ctx);
-                },
-            );
+                });
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(ui.style()).inner_margin(egui::Margin::same(4)))
