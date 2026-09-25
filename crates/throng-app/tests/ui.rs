@@ -1440,6 +1440,12 @@ fn with_manual_reload_a_saved_terminal_waits_for_reload_and_a_crash_s_command_co
     wait(&mut harness, "the remembered command's output", |app| {
         text_of(app, panel).contains("remembered-42")
     });
+    // The capture is spent once the reload has used it; the layout learns that a frame or two after
+    // the output arrives, so wait for it rather than read it at once.
+    wait(&mut harness, "the capture to be spent", |app| {
+        matches!(&app.active_layout().unwrap().panels[&panel].kind,
+            PanelKind::Terminal(config) if config.running_command.is_none())
+    });
     match &harness.state().active_layout().unwrap().panels[&panel].kind {
         PanelKind::Terminal(config) => {
             assert_eq!(config.startup_command.as_deref(), Some("echo remembered-$((6*7))"));
