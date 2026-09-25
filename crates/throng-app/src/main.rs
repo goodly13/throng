@@ -129,6 +129,10 @@ fn run_ui(folder: Option<PathBuf>) -> ExitCode {
         screenshot,
         pick_folder: throng_app::native_folder_picker(),
         releases: throng_app::github_releases(),
+        installer: std::sync::Arc::new(throng_app::PlatformInstaller::new(
+            std::env::current_exe().unwrap_or_default(),
+            std::env::var_os("APPIMAGE"),
+        )),
     };
 
     let options = eframe::NativeOptions {

@@ -9,6 +9,8 @@ name: Package
 #   APPLE_CERTIFICATE_P12 (base64 of a Developer ID Application .p12), APPLE_CERTIFICATE_PASSWORD,
 #   APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD.
 # A v* tag without them fails: a release never ships a .dmg that Gatekeeper refuses.
+# The release also carries throng-<version>-macos-universal.zip (the notarised, stapled throng.app
+# the in-app updater installs) and SHA256SUMS over every package.
 
 on:
   workflow_dispatch:
@@ -148,10 +150,27 @@ jobs:
             spctl --assess --type open --context context:primary-signature "$dmg"
           fi
 
+      - name: Unpack the .zip the updater installs and check it as the updater does
+        run: |
+          rm -rf "$RUNNER_TEMP/throng-zip"
+          mkdir -p "$RUNNER_TEMP/throng-zip"
+          ditto -x -k dist/throng-*-macos-universal.zip "$RUNNER_TEMP/throng-zip"
+          app="$RUNNER_TEMP/throng-zip/throng.app"
+          "$app/Contents/MacOS/throng" --version | grep -q '^throng '
+          codesign --verify --deep --strict "$app"
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          test "$(plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist")" = "$version"
+          if [ -n "$APPLE_APP_PASSWORD" ]; then
+            xcrun stapler validate "$app"
+            spctl --assess --type execute "$app"
+          fi
+
       - uses: actions/upload-artifact@v6
         with:
           name: throng-macos
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/*.zip
           if-no-files-found: error
 
   windows:
@@ -229,6 +248,16 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      # The Linux updater checks the AppImage it downloads against this list. The list comes from
+      # the same release, so it guards against a corrupt or truncated download, not a forged one:
+      # HTTPS from GitHub is the trust root there.
+      - name: Checksums
+        run: |
+          cd dist
+          rm -f SHA256SUMS
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Release
         env:

@@ -61,6 +61,11 @@ syntect = { version = "5.3", default-features = false, features = ["default-fanc
 rfd = "0.17"
 # The update check's one request, off the UI thread (already in the tree through egui_extras).
 ehttp = "0.7"
+# SHA-256, to check a downloaded AppImage against the release's SHA256SUMS.
+sha2 = "0.10"
+# The in-app updater's downloads (tens of MB), with a body limit set here rather than a
+# library default; already in the tree through ehttp.
+ureq = "3"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
