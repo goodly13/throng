@@ -134,7 +134,7 @@ pub(super) const PALETTES: &[(&str, Palette)] = &[
                     "#6e6a86", "#eb6f92", "#31748f", "#f6c177", "#9ccfd8", "#c4a7e7", "#ebbcba", "#e0def4"]),
         ..P
     }),
-    // One Dark, from Atom's One Dark syntax and UI themes (https://github.com/atom/atom), MIT.
+    // One Dark, from Atom's One Dark syntax theme (https://github.com/atom/one-dark-syntax), MIT.
     ("One Dark", Palette {
         bg: "#282c34", sidebar: Some("#21252b"), surface: "#2c313a", surface_active: Some("#3e4451"),
         text: "#abb2bf", text_muted: Some("#8b929e"), accent: "#61afef", danger: Some("#e06c75"),
