@@ -189,7 +189,7 @@ pub fn app_bundle_of(exe: &Path) -> Option<PathBuf> {
     let refused = bundle
         .components()
         .any(|c| matches!(c, Component::Normal(n) if n == "target" || n == "AppTranslocation"));
-    (!refused && bundle.is_absolute()).then(|| bundle.to_path_buf())
+    (!refused && bundle.has_root()).then(|| bundle.to_path_buf())
 }
 
 #[cfg(test)]
