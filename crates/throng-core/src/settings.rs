@@ -67,6 +67,27 @@ pub const SETTINGS: &[SettingDef] = &[
         kind: SettingKind::Text { default: "throng" },
     },
     SettingDef {
+        key: "appearance.style",
+        label: "Interface style",
+        help: "The interface's shape, apart from its colours. Classic is flat and square-shouldered; \
+               Soft rounds and spaces it out; Compact fits more in; Elevated sets the work on a card.",
+        kind: SettingKind::Choice { options: STYLES, default: "elevated" },
+    },
+    SettingDef {
+        key: "appearance.interfaceFont",
+        label: "Interface font",
+        help: "The typeface of menus, lists and labels: one throng ships, or any installed family by \
+               name. A family that cannot be found falls back to Inter.",
+        kind: SettingKind::Text { default: "Inter" },
+    },
+    SettingDef {
+        key: "appearance.codeFont",
+        label: "Terminal and editor font",
+        help: "The monospaced typeface of terminals and editors: one throng ships, or any installed \
+               family by name. A family that cannot be found falls back to JetBrains Mono.",
+        kind: SettingKind::Text { default: "JetBrains Mono" },
+    },
+    SettingDef {
         key: "appearance.iconPack",
         label: "Icon pack",
         help: "Glyphs for the file tree and toolbar icons, from a pack in the icon-packs folder. Empty uses throng's own.",
@@ -278,6 +299,9 @@ pub const SETTINGS: &[SettingDef] = &[
         kind: SettingKind::Bool { default: true },
     },
 ];
+
+/// The interface styles `appearance.style` chooses between.
+pub const STYLES: &[&str] = &["classic", "soft", "compact", "elevated"];
 
 /// Keys that used to exist and are deliberately dropped on the next write.
 pub const RETIRED_KEYS: &[&str] = &[];
@@ -546,6 +570,19 @@ impl Settings {
     pub fn theme(&self) -> &str {
         self.text("appearance.theme")
     }
+    /// The interface style, one of [`STYLES`].
+    #[must_use]
+    pub fn style(&self) -> &str {
+        self.text("appearance.style")
+    }
+    #[must_use]
+    pub fn interface_font(&self) -> &str {
+        self.text("appearance.interfaceFont")
+    }
+    #[must_use]
+    pub fn code_font(&self) -> &str {
+        self.text("appearance.codeFont")
+    }
     #[must_use]
     pub fn icon_pack(&self) -> &str {
         self.text("appearance.iconPack")
@@ -718,6 +755,19 @@ mod tests {
         let (s, outcome) = Settings::read(Some(r#"{"appearance":{"theme":3}}"#));
         assert_eq!(outcome, ReadOutcome::Loaded { corrected: vec!["appearance.theme"] });
         assert_eq!(s.theme(), "throng");
+    }
+
+    #[test]
+    fn the_style_and_fonts_default_and_an_unknown_style_is_corrected() {
+        let (s, _) = Settings::read(Some("{}"));
+        assert_eq!((s.style(), s.interface_font(), s.code_font()), ("elevated", "Inter", "JetBrains Mono"));
+        let (s, outcome) = Settings::read(Some(r#"{"appearance":{"style":"compact"}}"#));
+        assert_eq!((s.style(), outcome), ("compact", ReadOutcome::Loaded { corrected: vec![] }));
+        let (s, outcome) = Settings::read(Some(r#"{"appearance":{"style":"baroque"}}"#));
+        let fixed = ReadOutcome::Loaded { corrected: vec!["appearance.style"] };
+        assert_eq!((s.style(), outcome), ("elevated", fixed));
+        let (s, _) = Settings::read(Some(r#"{"appearance":{"codeFont":"Menlo"}}"#));
+        assert_eq!(s.code_font(), "Menlo", "whether it is installed is decided where fonts are known");
     }
 
     #[test]

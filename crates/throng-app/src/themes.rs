@@ -1,4 +1,4 @@
-//! The themes on offer: the fifteen built in, then the user's own from `<config>/themes/*.json`,
+//! The themes on offer: the twenty-eight built in, then the user's own from `<config>/themes/*.json`,
 //! re-read whenever that folder changes. A user file is never written except through the theme
 //! editor, and a write keeps whatever else the file holds.
 
@@ -173,7 +173,8 @@ mod tests {
         std::fs::write(dir.path().join("clash.json"), r#"{"name":"vscode"}"#).unwrap();
         std::fs::write(dir.path().join("notes.txt"), "not a theme").unwrap();
         let store = ThemeStore::load(dir.path().to_path_buf());
-        let names: Vec<&str> = store.all().iter().skip(15).map(|t| t.name.as_str()).collect();
+        let names: Vec<&str> =
+            store.all().iter().skip(theme::builtins().len()).map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["alpha", "Zed"]);
         let files: Vec<&str> = store.unusable.iter().map(|u| u.file.as_str()).collect();
         assert_eq!(files, ["bad.json", "clash.json"]);

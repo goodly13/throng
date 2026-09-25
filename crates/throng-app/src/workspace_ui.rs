@@ -563,7 +563,8 @@ pub fn show(
     let mut style = egui_dock::Style::from_egui(ui.style().as_ref());
     style.tab_bar.fill_tab_bar = false;
     style.tab.tab_body.inner_margin = egui::Margin::ZERO;
-    dock_look(&mut style, ui.visuals(), crate::theme::to_color32(viewer.ctx.project.colour));
+    let accent = crate::theme::to_color32(viewer.ctx.project.colour);
+    dock_look(&mut style, ui.visuals(), &viewer.ctx.look.shape, accent);
     DockArea::new(dock)
         .id(Id::new(("dock", tab_id)))
         .style(style)
@@ -643,10 +644,23 @@ fn tab_strip(
             } else {
                 RichText::new(&title).color(ui.visuals().weak_text_color())
             };
+            // In a pill style the open tab is a filled pill under its line; the pill is painted
+            // first so the label sits on it.
+            let pill = ui.painter().add(egui::Shape::Noop);
             let response = ui.add(egui::Button::new(text).frame_when_inactive(false));
             if selected {
                 let r = response.rect;
-                ui.painter().hline(r.x_range().shrink(4.0), r.bottom() - 1.0, egui::Stroke::new(2.0, accent));
+                if ctx.look.shape.pills {
+                    let fill = ui.visuals().widgets.open.weak_bg_fill;
+                    let radius = f32::from(ctx.look.shape.control_radius);
+                    ui.painter().set(pill, egui::Shape::rect_filled(r, radius, fill));
+                }
+                let inset = if ctx.look.shape.pills { 8.0 } else { 4.0 };
+                ui.painter().hline(
+                    r.x_range().shrink(inset),
+                    r.bottom() - 1.0,
+                    egui::Stroke::new(2.0, accent),
+                );
             }
             if response.clicked() {
                 ws.layout.active_tab = Some(id);
@@ -682,15 +696,21 @@ fn tab_strip(
 
 /// The panels' tabs: open ones merge with their panel, the rest are muted on the bar, and the focused
 /// panel's tab is outlined in the project's colour.
-fn dock_look(style: &mut egui_dock::Style, visuals: &egui::Visuals, accent: Color32) {
+fn dock_look(
+    style: &mut egui_dock::Style,
+    visuals: &egui::Visuals,
+    shape: &crate::style::Shape,
+    accent: Color32,
+) {
     let (text, muted, strong) =
         (visuals.text_color(), visuals.weak_text_color(), visuals.strong_text_color());
     let body = visuals.extreme_bg_color;
     let border = visuals.widgets.noninteractive.bg_stroke.color;
-    let top = egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 };
+    let r = shape.control_radius;
+    let top = egui::CornerRadius { nw: r, ne: r, sw: 0, se: 0 };
     style.tab_bar.bg_fill = visuals.panel_fill;
     style.tab_bar.hline_color = border;
-    style.tab_bar.height = 30.0;
+    style.tab_bar.height = shape.tab_bar_height;
     let t = &mut style.tab;
     for s in [&mut t.inactive, &mut t.inactive_with_kb_focus] {
         s.bg_fill = visuals.panel_fill;

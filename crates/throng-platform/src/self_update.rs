@@ -1,4 +1,4 @@
-//! Replacing the running install with a newer release's package (FR-052).
+//! Replacing the running install with a newer release's package (FR-054).
 //!
 //! Only two kinds of install replace themselves: a Developer ID signed `throng.app` on macOS, and
 //! an AppImage on Linux. Everything else (the Windows `.msi` and `.zip`, which need a code-signing

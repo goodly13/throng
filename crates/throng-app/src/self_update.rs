@@ -1,4 +1,4 @@
-//! Installing a newer release from inside throng (FR-052): *Install and Restart* on the update
+//! Installing a newer release from inside throng (FR-054): *Install and Restart* on the update
 //! notice. The app asks an [`Installer`] whether this install can replace itself, and has it
 //! download, check and install the release off the UI thread. The real one is
 //! [`PlatformInstaller`]; tests hand the app one that touches nothing.

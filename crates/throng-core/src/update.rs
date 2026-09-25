@@ -1,5 +1,5 @@
 //! Updates: is a newer throng published than the one running, and which of its files would
-//! replace this install (FR-052)?
+//! replace this install (FR-054)?
 //!
 //! throng asks GitHub for the latest release now and then and, when that release is newer, says so
 //! once with a link to download it. Where an install can replace itself (a Developer ID signed
