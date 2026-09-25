@@ -56,6 +56,8 @@ pub struct Services {
     pub pick_folder: FolderPicker,
     /// Where the update check learns the latest release.
     pub releases: crate::update_check::ReleaseSource,
+    /// Replaces this install with a newer release, where it can.
+    pub installer: std::sync::Arc<dyn crate::self_update::Installer>,
 }
 
 /// The notice that a newer release is out, and its actions.
@@ -111,8 +113,11 @@ pub struct ThrongApp {
     screenshot: Option<(PathBuf, Instant, bool)>,
     pick_folder: FolderPicker,
     updates: crate::update_check::UpdateCheck,
+    installer: std::sync::Arc<dyn crate::self_update::Installer>,
     /// The newer release the update notice offers.
-    update_offer: Option<String>,
+    update_offer: Option<(throng_core::update::Release, throng_core::update::Version)>,
+    /// The offered release, being installed.
+    installing: Option<crate::self_update::Installing>,
     started: Instant,
     /// The themes on offer, built in and the user's own.
     themes: crate::themes::ThemeStore,
@@ -229,7 +234,7 @@ fn read_settings(path: &Path) -> (Settings, ReadOutcome) {
 impl ThrongApp {
     /// Build the app. Any error here is a startup failure the caller reports and exits on.
     pub fn new(ctx: &Context, services: Services) -> anyhow::Result<Self> {
-        let Services { dirs, exe, open, screenshot, pick_folder, releases } = services;
+        let Services { dirs, exe, open, screenshot, pick_folder, releases, installer } = services;
         dirs.ensure()?;
         // Images for previews and icon packs: files, https (a preview decides what it asks for),
         // decoded formats and SVG.
@@ -311,7 +316,9 @@ impl ThrongApp {
             screenshot: screenshot.map(|(path, delay)| (path, Instant::now() + delay, false)),
             pick_folder,
             updates: crate::update_check::UpdateCheck::new(releases),
+            installer,
             update_offer: None,
+            installing: None,
             started: Instant::now(),
             themes: crate::themes::ThemeStore::load(themes_dir),
             look: crate::theme::Look::default(),
@@ -3518,9 +3525,20 @@ impl ThrongApp {
                         tracing::warn!(error = %e, "could not open the release page");
                     }
                 }
+                "update-install" => {
+                    if let Some((release, version)) = self.update_offer.clone() {
+                        let installer = std::sync::Arc::clone(&self.installer);
+                        let installing =
+                            crate::self_update::Installing::start(ui.ctx(), installer, release, version);
+                        self.notices.raise_quietly(installing_notice(&installing));
+                        self.installing = Some(installing);
+                        // The notice stays, showing the install's progress.
+                        continue;
+                    }
+                }
                 "update-skip" => {
-                    if let Some(version) = self.update_offer.take()
-                        && let Err(e) = self.store.set_state(UPDATE_SKIPPED_KEY, Some(&version))
+                    if let Some((_, version)) = self.update_offer.take()
+                        && let Err(e) = self.store.set_state(UPDATE_SKIPPED_KEY, Some(&version.to_string()))
                     {
                         tracing::warn!(error = %e, "could not remember the skipped release");
                     }
@@ -3531,25 +3549,66 @@ impl ThrongApp {
         }
     }
 
-    /// FR-052: say once, with a link, when a newer release than this one is out.
+    /// FR-052: say once, with a link, when a newer release than this one is out, and install it
+    /// when asked where this install can replace itself.
     fn check_for_updates(&mut self, ctx: &Context) {
-        let Some(tag) = self.updates.poll(ctx, self.settings.check_for_updates()) else { return };
-        let running = env!("CARGO_PKG_VERSION");
-        let Some(latest) = throng_core::update::newer_release(&tag, running) else { return };
-        let latest = latest.to_string();
-        if self.store.state(UPDATE_SKIPPED_KEY).ok().flatten().as_deref() == Some(latest.as_str()) {
+        if self.progress_install(ctx) {
             return;
         }
-        self.notices.raise_quietly(
-            Notice::new(
-                UPDATE_NOTICE,
-                Severity::Info,
-                format!("throng {latest} is available. This is {running}."),
-            )
-            .with_action("update-download", "Download")
-            .with_action("update-skip", "Skip This Version"),
-        );
-        self.update_offer = Some(latest);
+        let Some(release) = self.updates.poll(ctx, self.settings.check_for_updates()) else { return };
+        let running = env!("CARGO_PKG_VERSION");
+        let Some(latest) = throng_core::update::newer_release(&release.tag, running) else { return };
+        if self.store.state(UPDATE_SKIPPED_KEY).ok().flatten() == Some(latest.to_string()) {
+            return;
+        }
+        let installable = self.installer.can_install(&release, latest);
+        self.notices.raise_quietly(update_notice(latest, installable, None));
+        self.update_offer = Some((release, latest));
+    }
+
+    /// Follow an install in progress; true while one runs. Once it has installed, throng quits as
+    /// *Leave Running* does, so the new throng reattaches the terminals, and opens again.
+    fn progress_install(&mut self, ctx: &Context) -> bool {
+        let Some(installing) = &mut self.installing else { return false };
+        let result = installing.poll();
+        let version = installing.version;
+        match result {
+            None => {
+                let notice = installing_notice(installing);
+                self.notices.raise_quietly(notice);
+                return true;
+            }
+            Some(Ok(())) => {
+                self.installing = None;
+                if let Err(e) = self.installer.relaunch() {
+                    tracing::warn!(error = %e, "the updated throng could not be reopened");
+                    self.notices.raise(
+                        Notice::new(
+                            UPDATE_NOTICE,
+                            Severity::Warning,
+                            format!(
+                                "throng {version} is installed. Quit throng and open it again to use it."
+                            ),
+                        )
+                        .with_detail(e),
+                    );
+                    return false;
+                }
+                tracing::info!(%version, "update installed; restarting");
+                self.notices.dismiss(UPDATE_NOTICE);
+                self.dialog = None;
+                self.finish_close(Answer::LeaveRunning);
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
+            Some(Err(e)) => {
+                self.installing = None;
+                tracing::warn!(error = %e, %version, "the update was not installed");
+                let installable =
+                    self.update_offer.as_ref().is_some_and(|(r, v)| self.installer.can_install(r, *v));
+                self.notices.raise(update_notice(version, installable, Some(e)));
+            }
+        }
+        false
     }
 
     fn welcome(&mut self, ui: &mut Ui) {
@@ -3641,6 +3700,36 @@ impl ThrongApp {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
     }
+}
+
+/// The update notice for a newer release: *Install and Restart* where this install can replace
+/// itself, and always *Download* and *Skip This Version*. After a failed install it says why.
+fn update_notice(version: throng_core::update::Version, installable: bool, failed: Option<String>) -> Notice {
+    let running = env!("CARGO_PKG_VERSION");
+    let notice = match failed {
+        None => Notice::new(
+            UPDATE_NOTICE,
+            Severity::Info,
+            format!("throng {version} is available. This is {running}."),
+        ),
+        Some(error) => {
+            Notice::new(UPDATE_NOTICE, Severity::Warning, format!("throng {version} was not installed."))
+                .with_detail(error)
+        }
+    };
+    let notice =
+        if installable { notice.with_action("update-install", "Install and Restart") } else { notice };
+    notice.with_action("update-download", "Download").with_action("update-skip", "Skip This Version")
+}
+
+/// The update notice while the release installs: what it is doing, and nothing to click.
+fn installing_notice(installing: &crate::self_update::Installing) -> Notice {
+    let version = installing.version;
+    let message = match installing.step() {
+        crate::self_update::Step::Downloading => format!("Downloading throng {version}\u{2026}"),
+        crate::self_update::Step::Verifying => format!("Checking and installing throng {version}\u{2026}"),
+    };
+    Notice::new(UPDATE_NOTICE, Severity::Info, message)
 }
 
 fn settings_malformed(reason: &str) -> Notice {

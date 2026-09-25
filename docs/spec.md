@@ -555,9 +555,14 @@ missing. [Open work](#open-work) collects every gap in one list.
 - **FR-045** Packages. `packaging/package.sh` builds packages for the platform it runs on:
   - **Linux:** a `.deb`, an AppImage and a `.tar.gz`. The `.deb` declares the X11, Wayland and
     OpenGL libraries loaded at run time, and the oldest glibc the binary needs.
-  - **macOS:** a universal `throng.app` (Apple silicon and Intel) in a `.dmg`. It is signed with a
-    Developer ID and notarised when those credentials are given, and ad-hoc signed otherwise; a
-    release (FR-048) is always notarised.
+  - **macOS:** a universal `throng.app` (Apple silicon and Intel) in a `.dmg`, and the same app in
+    `throng-<version>-macos-universal.zip` (packed with `ditto`, so its signature survives), which
+    is what the in-app updater installs (FR-052). The app is signed with a Developer ID when those
+    credentials are given, and ad-hoc signed otherwise. With the notarisation credentials the app is
+    notarised and stapled before it is packed, so both copies carry their ticket, and the `.dmg` is
+    notarised and stapled too; a release (FR-048) is always notarised. The Package workflow unpacks
+    the `.zip` and checks it as the updater does: `codesign --verify --deep --strict`, its version,
+    and, when notarised, `stapler validate` and `spctl --assess`.
   - **Windows:** a `.zip`, and a per-user `.msi` (built with WiX) that installs to
     `%LOCALAPPDATA%\Programs\throng` without administrator rights, adds a Start menu shortcut, and
     upgrades an older throng in place. A release build opens no console window.
@@ -570,15 +575,43 @@ missing. [Open work](#open-work) collects every gap in one list.
   `Cargo.toml`, publishes every package as a GitHub release, once each has been installed and run
   on its platform. A tag that names another version publishes nothing, and so does a tag built
   without the Developer ID and notarisation credentials: Gatekeeper refuses an ad-hoc signed `.dmg`
-  on any Mac but the one that built it.
-- **FR-052** Updates. throng installs nothing itself. While `updates.check` is on (the default) it
-  asks GitHub for the latest published release at start and once a day, sending only its name
-  and version. A release newer than the one running raises one notice, *throng X.Y.Z is
-  available*, with *Download* (the release page) and *Skip This Version*; a skipped version stays
-  quiet, and a later one is announced again. No answer, or an unreadable one, says nothing. To
-  upgrade, quit with *Leave Running* and install the new package: the terminal host keeps its
-  terminals and the new throng reattaches them in the saved layout, unless the new version speaks
-  a different protocol to the host, when a notice offers to restart it, which ends its terminals.
+  on any Mac but the one that built it. The release also carries `SHA256SUMS`, `sha256sum`'s list
+  over every package, which the AppImage updater checks its download against (FR-052).
+- **FR-052** Updates. While `updates.check` is on (the default) throng asks GitHub for the latest
+  published release at start and once a day, sending only its name and version. A release newer
+  than the one running raises one notice, *throng X.Y.Z is available*, with *Download* (the release
+  page) and *Skip This Version*; a skipped version stays quiet, and a later one is announced again.
+  No answer, or an unreadable one, says nothing.
+  - **Install and Restart.** Where the install can replace itself, and the release carries the
+    files it needs, the notice also offers *Install and Restart*. Nothing is installed without that
+    click. The download and every check run off the UI thread; meanwhile the same notice says what
+    is happening (*Downloading throng X.Y.Z…*, then *Checking and installing…*) and offers nothing
+    to click. Once installed, throng opens the new version after this one has exited and quits as
+    *Leave Running* does: busy terminals keep running in the terminal host, idle ones close, and
+    the new throng reattaches them in the saved layout. If anything fails, the installed throng is
+    left as it was (or put back), and the notice says what went wrong with *Download* still there.
+    - **macOS:** only a `throng.app` run from its own bundle (`…/throng.app/Contents/MacOS/throng`,
+      not a build under `target/`, nor an app macOS translocated), in a folder the user can write,
+      and signed with a Developer ID. The updater downloads the release's
+      `throng-X.Y.Z-macos-universal.zip` (FR-045), unpacks it with `ditto` beside the installed
+      app, and before touching the installed app requires `codesign --verify --deep --strict` to
+      pass, the new app's TeamIdentifier to equal the running app's, `spctl --assess --type
+      execute` to accept it, and its `CFBundleShortVersionString` to be X.Y.Z. It then moves the old
+      app aside, renames the new one into place, and removes the old one.
+    - **Linux:** only an AppImage (`APPIMAGE` set) in a folder the user can write. The updater
+      downloads `throng-X.Y.Z-<machine>.AppImage` and the release's `SHA256SUMS` (FR-048), checks
+      the one against the other, and renames the new file, executable, over the old. That list comes
+      from the same release, so it only catches a corrupt or truncated download; the HTTPS download
+      from GitHub is what the file is trusted on.
+    - **Everywhere else** (the Windows `.msi` and `.zip`, the `.deb`, the `.tar.gz`, and development
+      builds) the notice offers *Download* and *Skip This Version* only. Windows needs a
+      code-signing certificate before throng can check what it would install there.
+
+  This replaces "throng installs nothing itself": a download-and-reinstall by hand was the only
+  way to upgrade, and the two installs that can check what they install (a Developer ID signed app,
+  and an AppImage over HTTPS) now do it in place. By hand, upgrading is as before: quit with *Leave
+  Running* and install the new package. Either way, a new version that speaks a different protocol
+  to the terminal host raises a notice offering to restart the host, which ends its terminals.
 
 ## Open work
 

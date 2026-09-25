@@ -22,6 +22,7 @@ pub mod project_files;
 pub mod quick_open;
 pub mod recovery;
 pub mod search_panel;
+pub mod self_update;
 pub mod status_strip;
 pub mod term;
 pub mod theme;
@@ -31,4 +32,5 @@ pub mod watch;
 pub mod workspace_ui;
 
 pub use app::{FolderPicker, Services, ThrongApp, native_folder_picker};
+pub use self_update::{Installer, NoInstaller, PlatformInstaller, Step};
 pub use update_check::{ReleaseCallback, ReleaseSource, github_releases};

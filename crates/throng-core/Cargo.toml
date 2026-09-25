@@ -13,6 +13,7 @@ serde_json.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
 encoding_rs.workspace = true
+sha2.workspace = true
 similar = "3"
 unicode-normalization = "0.1"
 

@@ -8,6 +8,7 @@
 pub mod dirs;
 pub mod fs;
 pub mod process;
+pub mod self_update;
 pub mod shells;
 
 use throng_core::paths::PathRules;

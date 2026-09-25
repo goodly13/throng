@@ -6,12 +6,12 @@ use std::time::Instant;
 
 use crossbeam_channel::{Receiver, TryRecvError};
 use egui::Context;
-use throng_core::update::{CHECK_INTERVAL, LATEST_RELEASE_API, release_tag};
+use throng_core::update::{CHECK_INTERVAL, LATEST_RELEASE_API, Release, parse_release};
 
-/// Called with the latest release's tag, or `None` when it could not be learned.
-pub type ReleaseCallback = Box<dyn FnOnce(Option<String>) + Send>;
+/// Called with the latest release, or `None` when it could not be learned.
+pub type ReleaseCallback = Box<dyn FnOnce(Option<Release>) + Send>;
 
-/// Looks up the latest release's tag and hands it to the callback, from any thread.
+/// Looks up the latest release and hands it to the callback, from any thread.
 pub type ReleaseSource = Box<dyn Fn(ReleaseCallback)>;
 
 /// The latest release on GitHub. The request carries throng's name and version and nothing else.
@@ -22,8 +22,8 @@ pub fn github_releases() -> ReleaseSource {
         request.headers.insert("Accept", "application/vnd.github+json");
         request.headers.insert("User-Agent", concat!("throng/", env!("CARGO_PKG_VERSION")));
         ehttp::fetch(request, move |result| {
-            let tag = match result {
-                Ok(response) if response.ok => response.text().and_then(release_tag),
+            let release = match result {
+                Ok(response) if response.ok => response.text().and_then(parse_release),
                 Ok(response) => {
                     tracing::info!(status = response.status, "update check: no release answer");
                     None
@@ -33,7 +33,7 @@ pub fn github_releases() -> ReleaseSource {
                     None
                 }
             };
-            done(tag);
+            done(release);
         });
     })
 }
@@ -42,7 +42,7 @@ pub fn github_releases() -> ReleaseSource {
 pub struct UpdateCheck {
     source: ReleaseSource,
     due: Instant,
-    pending: Option<Receiver<Option<String>>>,
+    pending: Option<Receiver<Option<Release>>>,
 }
 
 impl UpdateCheck {
@@ -51,13 +51,14 @@ impl UpdateCheck {
         Self { source, due: Instant::now(), pending: None }
     }
 
-    /// Start a check when one is due and `enabled`; returns the latest tag once an answer arrives.
-    pub fn poll(&mut self, ctx: &Context, enabled: bool) -> Option<String> {
+    /// Start a check when one is due and `enabled`; returns the latest release once an answer
+    /// arrives.
+    pub fn poll(&mut self, ctx: &Context, enabled: bool) -> Option<Release> {
         if let Some(pending) = &self.pending {
             return match pending.try_recv() {
-                Ok(tag) => {
+                Ok(release) => {
                     self.pending = None;
-                    tag
+                    release
                 }
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => {
@@ -77,8 +78,8 @@ impl UpdateCheck {
         self.due = now + CHECK_INTERVAL;
         let (tx, rx) = crossbeam_channel::bounded(1);
         let ctx = ctx.clone();
-        (self.source)(Box::new(move |tag| {
-            let _ = tx.send(tag);
+        (self.source)(Box::new(move |release| {
+            let _ = tx.send(release);
             ctx.request_repaint();
         }));
         self.pending = Some(rx);
