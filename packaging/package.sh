@@ -5,6 +5,8 @@
 #            throng-<version>-<machine>.AppImage   (when appimagetool is on PATH or $APPIMAGETOOL)
 #            throng-<version>-linux-<machine>.tar.gz
 #   macOS    throng-<version>-macos-universal.dmg  (throng.app for Apple silicon and Intel)
+#            throng-<version>-macos-universal.zip  (the same throng.app, which the in-app updater
+#                                                   installs; made with ditto so signatures survive)
 #            Signed with $APPLE_SIGNING_IDENTITY and notarised with $APPLE_ID, $APPLE_TEAM_ID and
 #            $APPLE_APP_PASSWORD when those are set; ad-hoc signed otherwise, which runs on the
 #            machine that built it but is refused by Gatekeeper elsewhere.
@@ -151,6 +153,25 @@ macos() {
   fi
   codesign --verify --strict "$app"
 
+  local notarise=false
+  if [ -n "${APPLE_SIGNING_IDENTITY:-}" ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] &&
+    [ -n "${APPLE_APP_PASSWORD:-}" ]; then
+    notarise=true
+  fi
+
+  # The app itself is notarised and stapled before it is packed, so the copy in the .zip (which the
+  # in-app updater installs) and the copy in the .dmg both carry their ticket offline.
+  local zip="$dist/throng-$version-macos-universal.zip"
+  rm -f "$zip"
+  if $notarise; then
+    ditto -c -k --keepParent "$app" "$zip"
+    xcrun notarytool submit "$zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+      --password "$APPLE_APP_PASSWORD" --wait
+    xcrun stapler staple "$app"
+    rm -f "$zip"
+  fi
+  ditto -c -k --keepParent "$app" "$zip"
+
   local staging="$dist/dmg"
   local dmg="$dist/throng-$version-macos-universal.dmg"
   rm -rf "$staging" "$dmg"
@@ -160,14 +181,13 @@ macos() {
   hdiutil create -volname "throng $version" -srcfolder "$staging" -ov -format UDZO "$dmg" >/dev/null
   rm -rf "$staging" "$app"
 
-  if [ -n "${APPLE_SIGNING_IDENTITY:-}" ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] &&
-    [ -n "${APPLE_APP_PASSWORD:-}" ]; then
+  if $notarise; then
     codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
     xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
       --password "$APPLE_APP_PASSWORD" --wait
     xcrun stapler staple "$dmg"
   else
-    echo "package.sh: no Apple signing identity and notarisation account; the .dmg is not notarised" >&2
+    echo "package.sh: no Apple signing identity and notarisation account; the .dmg and .zip are not notarised" >&2
   fi
 }
 

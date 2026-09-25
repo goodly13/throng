@@ -10,7 +10,7 @@ use egui::{Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use throng_app::term::Status;
-use throng_app::{ReleaseSource, Services, ThrongApp};
+use throng_app::{Installer, NoInstaller, ReleaseSource, Services, Step, ThrongApp};
 use throng_core::ids::{PanelId, ProjectId};
 use throng_core::paths::PathRules;
 use throng_core::project::{ProjectBook, ProjectInput};
@@ -52,19 +52,30 @@ impl Env {
     /// The app, with a folder picker that answers `picked` (or is cancelled, for `None`).
     fn app_picking(&self, open: Option<PathBuf>, picked: Option<PathBuf>) -> Harness<'static, ThrongApp> {
         // No test asks the network; the update check's own tests hand it a release.
-        self.launch(open, picked, Box::new(|done| done(None)))
+        self.launch(open, picked, Box::new(|done| done(None)), Arc::new(NoInstaller))
     }
 
     /// The app, told that `tag` is the latest release; counts how often it asks.
     fn app_released(&self, tag: &str, asked: &Arc<AtomicUsize>) -> Harness<'static, ThrongApp> {
+        self.app_updating(tag, asked, Arc::new(NoInstaller))
+    }
+
+    /// The app, told that `tag` is the latest release, with `installer` to install it.
+    fn app_updating(
+        &self,
+        tag: &str,
+        asked: &Arc<AtomicUsize>,
+        installer: Arc<dyn Installer>,
+    ) -> Harness<'static, ThrongApp> {
         let (tag, asked) = (tag.to_owned(), Arc::clone(asked));
         self.launch(
             None,
             None,
             Box::new(move |done| {
                 asked.fetch_add(1, Ordering::SeqCst);
-                done(Some(tag.clone()));
+                done(Some(throng_core::update::Release::tagged(tag.clone())));
             }),
+            installer,
         )
     }
 
@@ -73,6 +84,7 @@ impl Env {
         open: Option<PathBuf>,
         picked: Option<PathBuf>,
         releases: ReleaseSource,
+        installer: Arc<dyn Installer>,
     ) -> Harness<'static, ThrongApp> {
         let services = Services {
             dirs: self.dirs.clone(),
@@ -81,6 +93,7 @@ impl Env {
             screenshot: None,
             pick_folder: Box::new(move |_| picked.clone()),
             releases,
+            installer,
         };
         // Frames a display's length apart (kittest's default is a quarter second), so two clicks in
         // successive frames are a double-click, as they are for a person.
@@ -1917,4 +1930,148 @@ fn the_side_columns_keep_the_width_they_are_dragged_to_even_with_long_names() {
             assert!((after - (before + by)).abs() < 2.0, "{id}: {before} dragged by {by} ended at {after}");
         }
     }
+}
+
+/// An installer that touches nothing: it installs (or fails with `failure`) once `go` is set, and
+/// counts relaunches.
+struct FakeInstaller {
+    installable: bool,
+    failure: Option<String>,
+    go: std::sync::atomic::AtomicBool,
+    installs: AtomicUsize,
+    relaunches: AtomicUsize,
+}
+
+impl FakeInstaller {
+    fn new(installable: bool, failure: Option<&str>, go: bool) -> Arc<Self> {
+        Arc::new(Self {
+            installable,
+            failure: failure.map(str::to_owned),
+            go: std::sync::atomic::AtomicBool::new(go),
+            installs: AtomicUsize::new(0),
+            relaunches: AtomicUsize::new(0),
+        })
+    }
+}
+
+impl Installer for FakeInstaller {
+    fn can_install(&self, _: &throng_core::update::Release, _: throng_core::update::Version) -> bool {
+        self.installable
+    }
+
+    fn install(
+        &self,
+        _: &throng_core::update::Release,
+        _: throng_core::update::Version,
+        step: &dyn Fn(Step),
+    ) -> Result<(), String> {
+        step(Step::Downloading);
+        step(Step::Verifying);
+        // The install thread, not the test, waits: the test waits on what the app shows.
+        while !self.go.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        self.installs.fetch_add(1, Ordering::SeqCst);
+        self.failure.clone().map_or(Ok(()), Err)
+    }
+
+    fn relaunch(&self) -> Result<(), String> {
+        self.relaunches.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+fn update_notice(app: &ThrongApp) -> Option<throng_core::notice::Notice> {
+    app.notices().iter().find(|n| n.key == "update-available").cloned()
+}
+
+#[test]
+fn an_install_that_can_replace_itself_offers_install_and_restart() {
+    let env = Env::new();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let installer = FakeInstaller::new(true, None, true);
+    let mut harness = env.app_updating("v999.0.0", &asked, installer);
+    wait(&mut harness, "the update notice", |app| update_notice(app).is_some());
+    steps(&mut harness, 2);
+    harness.get_by_label("Install and Restart");
+    harness.get_by_label("Download");
+    harness.get_by_label("Skip This Version");
+}
+
+#[test]
+fn an_install_that_cannot_replace_itself_offers_only_download() {
+    let env = Env::new();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let installer = FakeInstaller::new(false, None, true);
+    let mut harness = env.app_updating("v999.0.0", &asked, installer);
+    wait(&mut harness, "the update notice", |app| update_notice(app).is_some());
+    steps(&mut harness, 2);
+    assert!(harness.query_by_label("Install and Restart").is_none());
+    harness.get_by_label("Download");
+}
+
+#[cfg(unix)]
+#[test]
+fn install_and_restart_installs_then_quits_leaving_busy_terminals_running() {
+    let env = Env::new();
+    let root = env.folder("upd");
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(startup("echo up-$((40+2)); sleep 120")));
+    });
+    let asked = Arc::new(AtomicUsize::new(0));
+    let installer = FakeInstaller::new(true, None, false);
+    let mut harness = env.app_updating("v999.0.0", &asked, Arc::clone(&installer) as Arc<dyn Installer>);
+    let busy = first_panel(harness.state());
+    wait(&mut harness, "the busy terminal", |app| text_of(app, busy).contains("up-42"));
+    wait(&mut harness, "the sleep to hold the foreground", |_| {
+        matches!(env.client().request(Request::List, WAIT), Ok(Reply::Terminals(list))
+            if list.iter().any(|t| t.terminal == busy.into() && t.busy))
+    });
+    wait(&mut harness, "the update notice", |app| update_notice(app).is_some());
+    steps(&mut harness, 2);
+    harness.get_by_label("Install and Restart").click();
+
+    // While it runs, the one notice says what it is doing and offers nothing to click.
+    wait(&mut harness, "the install's progress", |app| {
+        update_notice(app).is_some_and(|n| n.message.starts_with("Checking and installing throng 999.0.0"))
+    });
+    steps(&mut harness, 2);
+    assert!(harness.query_by_label("Download").is_none());
+    assert!(harness.query_by_label("Install and Restart").is_none());
+    assert_eq!(harness.state().notices().iter().filter(|n| n.key == "update-available").count(), 1);
+
+    installer.go.store(true, Ordering::SeqCst);
+    wait(&mut harness, "throng to quit", ThrongApp::close_confirmed);
+    assert_eq!(installer.installs.load(Ordering::SeqCst), 1);
+    assert_eq!(installer.relaunches.load(Ordering::SeqCst), 1, "the new throng is opened");
+    drop(harness);
+    let Ok(Reply::Terminals(list)) = env.client().request(Request::List, WAIT) else { panic!() };
+    assert!(
+        list.iter().any(|t| t.terminal == busy.into() && t.exited.is_none()),
+        "quitting to update leaves the busy terminal running, as Leave Running does"
+    );
+}
+
+#[test]
+fn a_failed_install_says_why_and_keeps_download() {
+    let env = Env::new();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let failure = "The downloaded throng.app is signed by team EVIL, not GOOD.";
+    let installer = FakeInstaller::new(true, Some(failure), true);
+    let mut harness = env.app_updating("v999.0.0", &asked, Arc::clone(&installer) as Arc<dyn Installer>);
+    wait(&mut harness, "the update notice", |app| update_notice(app).is_some());
+    steps(&mut harness, 2);
+    harness.get_by_label("Install and Restart").click();
+    wait(&mut harness, "the failure", |app| {
+        update_notice(app).is_some_and(|n| n.detail.as_deref() == Some(failure))
+    });
+    steps(&mut harness, 2);
+    let notice = update_notice(harness.state()).unwrap();
+    assert_eq!(notice.message, "throng 999.0.0 was not installed.");
+    harness.get_by_label(failure);
+    harness.get_by_label("Download");
+    harness.get_by_label("Install and Restart");
+    assert!(!harness.state().close_confirmed(), "a failed install does not quit");
+    assert_eq!(installer.relaunches.load(Ordering::SeqCst), 0);
 }
