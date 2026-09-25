@@ -1,5 +1,7 @@
 //! The application: state, the frame loop, and how user actions are applied.
 
+mod appearance;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -116,9 +118,14 @@ pub struct ThrongApp {
     started: Instant,
     /// The themes on offer, built in and the user's own.
     themes: crate::themes::ThemeStore,
-    /// The active theme's colours, and the theme and system mode they were made from.
+    /// The active theme's colours in the active style, and the theme, style and interface scale
+    /// they were made from.
     look: crate::theme::Look,
-    look_source: Option<(throng_core::theme::Theme, f32)>,
+    look_source: Option<(throng_core::theme::Theme, crate::style::Style, f32)>,
+    /// The installed fonts, found when a setting first names one throng does not ship.
+    system_fonts: crate::fonts::SystemFonts,
+    /// The interface and code font names the fonts in force were made from.
+    fonts_source: Option<(String, String)>,
     /// The key bindings: the defaults with `keybindings.json` over them.
     keymap: std::sync::Arc<throng_core::keymap::Keymap>,
     /// The icon packs in `<config>/icon-packs`, the folders that could not be read as one, and the
@@ -234,7 +241,6 @@ impl ThrongApp {
         // Images for previews and icon packs: files, https (a preview decides what it asks for),
         // decoded formats and SVG.
         egui_extras::install_image_loaders(ctx);
-        crate::theme::install_fonts(ctx);
         let rules = throng_platform::path_rules();
         let mut notices = NoticeCenter::default();
 
@@ -316,6 +322,8 @@ impl ThrongApp {
             themes: crate::themes::ThemeStore::load(themes_dir),
             look: crate::theme::Look::default(),
             look_source: None,
+            system_fonts: crate::fonts::SystemFonts::default(),
+            fonts_source: None,
             keymap: std::sync::Arc::new(throng_core::keymap::Keymap::defaults(crate::keymap::mac())),
             icon_packs: Vec::new(),
             subs: SubWorkspaces::default(),
@@ -334,6 +342,7 @@ impl ThrongApp {
             file_histories: HashMap::new(),
             previews: HashMap::new(),
         };
+        app.apply_fonts(ctx);
         match app.store.states_with_prefix(LANGUAGE_KEY_PREFIX) {
             Ok(entries) => {
                 for (path, language) in entries {
@@ -604,19 +613,51 @@ impl ThrongApp {
         self.closing == Closing::Confirmed
     }
 
-    /// Draw in the theme the settings name (and, for `system`, the platform's mode) at the
-    /// interface scale; the work is done only when one of those changed.
+    /// Draw in the theme the settings name (and, for `system`, the platform's mode) in the
+    /// interface style at the interface scale; the work is done only when one of those changed.
     fn apply_theme(&mut self, ctx: &Context) {
         let system_dark = ctx.system_theme().is_none_or(|t| t == egui::Theme::Dark);
         let theme = self.themes.resolve(self.settings.theme(), system_dark);
+        let style = crate::style::Style::parse(self.settings.style());
         let scale = self.settings.ui_scale();
-        if self.look_source.as_ref().is_some_and(|(t, s)| t == theme && (*s - scale).abs() < f32::EPSILON) {
+        if self
+            .look_source
+            .as_ref()
+            .is_some_and(|(t, st, s)| t == theme && *st == style && (*s - scale).abs() < f32::EPSILON)
+        {
             return;
         }
-        self.look = crate::theme::Look::new(theme);
-        self.look_source = Some((theme.clone(), scale));
+        self.look = crate::theme::Look::new(theme, style);
+        self.look_source = Some((theme.clone(), style, scale));
         crate::theme::apply(ctx, &self.look, scale);
         self.docs.set_theme(self.look.syntax_theme());
+    }
+
+    /// Set text in the fonts the settings name, when they changed. A font that cannot be found
+    /// raises one notice naming it, and goes when the setting is fixed.
+    fn apply_fonts(&mut self, ctx: &Context) {
+        let wanted = (self.settings.interface_font().to_owned(), self.settings.code_font().to_owned());
+        if self.fonts_source.as_ref() == Some(&wanted) {
+            return;
+        }
+        let missing = crate::fonts::install(ctx, &wanted.0, &wanted.1, &mut self.system_fonts);
+        self.fonts_source = Some(wanted);
+        if missing.is_empty() {
+            self.notices.dismiss("fonts:missing");
+            return;
+        }
+        let said: Vec<String> = missing
+            .iter()
+            .map(|m| format!("the {} font \"{}\" (drawing in {})", m.label, m.name, m.fallback))
+            .collect();
+        self.notices.raise(
+            Notice::new(
+                "fonts:missing",
+                Severity::Warning,
+                format!("Could not find or read {}.", said.join(" and ")),
+            )
+            .with_action("open-settings", "Preferences"),
+        );
     }
 
     fn active_project(&self) -> Option<&Project> {
@@ -1552,8 +1593,12 @@ impl ThrongApp {
 
     /// Put a side column on the right or the left, and keep the choice.
     fn set_side(&mut self, key: &str, right: bool) {
-        let side = if right { "right" } else { "left" };
-        if self.settings.set(key, throng_core::settings::SettingValue::Text(side.to_owned())) {
+        self.set_text(key, if right { "right" } else { "left" });
+    }
+
+    /// Set a text or choice setting from a menu, and write the file.
+    fn set_text(&mut self, key: &str, value: &str) {
+        if self.settings.set(key, throng_core::settings::SettingValue::Text(value.to_owned())) {
             self.write_settings();
         }
     }
@@ -1624,6 +1669,7 @@ impl ThrongApp {
             icon_packs: &[],
             path: &path,
             system_dark: true,
+            fonts: &mut self.system_fonts,
             keymap: &mut self.keymap,
             keybindings_path: &keybindings_path,
         };
@@ -3109,6 +3155,12 @@ impl ThrongApp {
 
     fn menu_bar(&mut self, ui: &mut Ui, actions: &mut Vec<PanelAction>) {
         egui::MenuBar::new().ui(ui, |ui| {
+            // On macOS the app's own menu comes first and holds Preferences, as every Mac app's
+            // does; elsewhere they are in File.
+            let mac = crate::keymap::mac();
+            if mac {
+                ui.menu_button("throng", |ui| self.app_menu(ui));
+            }
             ui.menu_button("File", |ui| {
                 if ui.button("New Project…").clicked() {
                     self.dialog =
@@ -3131,15 +3183,14 @@ impl ThrongApp {
                         ui.close();
                     }
                 });
-                ui.separator();
-                if ui.button("Preferences…").clicked() {
-                    self.prefs.open = true;
-                    ui.close();
-                }
-                ui.separator();
-                if ui.button("Quit").clicked() {
-                    ui.ctx().send_viewport_cmd(ViewportCommand::Close);
-                    ui.close();
+                if !mac {
+                    ui.separator();
+                    self.preferences_item(ui);
+                    ui.separator();
+                    if ui.button("Quit").clicked() {
+                        ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+                        ui.close();
+                    }
                 }
             });
             ui.menu_button("Go", |ui| {
@@ -3188,6 +3239,8 @@ impl ThrongApp {
                 if ui.checkbox(&mut projects_right, "Projects on the Right").clicked() {
                     self.set_side("appearance.projectsSide", projects_right);
                 }
+                ui.separator();
+                self.appearance_menus(ui);
             });
             ui.menu_button("Help", |ui| {
                 if ui.button("Open Logs Folder").clicked() {
@@ -3223,26 +3276,30 @@ impl ThrongApp {
             for (index, project) in projects.iter().enumerate() {
                 let colour = crate::theme::to_color32(project.colour);
                 let selected = Some(project.id) == active;
-                let response = ui
-                    .horizontal(|ui| {
-                        let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 18.0), egui::Sense::hover());
-                        ui.painter().circle_filled(rect.center(), 5.0, colour);
-                        let text = if selected {
-                            RichText::new(&project.name).strong()
-                        } else {
-                            RichText::new(&project.name)
-                        };
-                        // The row's full width is the project's to hover and click; a long name is
-                        // cut short so it never sets the column's width.
-                        ui.add(
-                            egui::Button::selectable(selected, (text, egui::Atom::grow()))
-                                .truncate()
-                                .frame_when_inactive(false)
-                                .min_size(egui::vec2(ui.available_width(), 0.0)),
-                        )
-                    })
-                    .inner;
-                let response = response.on_hover_text(project.root.display().to_string());
+                let response = ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 18.0), egui::Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 5.0, colour);
+                    let text = if selected {
+                        RichText::new(&project.name).strong()
+                    } else {
+                        RichText::new(&project.name)
+                    };
+                    // The row's full width is the project's to hover and click; a long name is
+                    // cut short so it never sets the column's width.
+                    ui.add(
+                        egui::Button::selectable(selected, (text, egui::Atom::grow()))
+                            .truncate()
+                            .frame_when_inactive(false)
+                            .min_size(egui::vec2(ui.available_width(), 0.0)),
+                    )
+                });
+                // In a pill style the active project has the accent's bar at the row's edge.
+                if selected && self.look.shape.pills {
+                    let row = response.response.rect;
+                    let stroke = egui::Stroke::new(2.0, self.look.accent);
+                    ui.painter().vline(row.left() - 4.0, row.y_range().shrink(3.0), stroke);
+                }
+                let response = response.inner.on_hover_text(project.root.display().to_string());
                 if response.clicked() && !selected {
                     switch_to = Some(project.id);
                 }
@@ -3692,6 +3749,7 @@ impl eframe::App for ThrongApp {
             }
         }
         self.apply_theme(&ctx);
+        self.apply_fonts(&ctx);
         self.apply_icons(&ctx);
         // A chord being captured for a key binding is nobody else's.
         let mut actions = if self.prefs.capturing() {
@@ -3701,17 +3759,23 @@ impl eframe::App for ThrongApp {
             self.shortcuts(&ctx)
         };
 
-        egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui, &mut actions));
-        let status_frame = egui::Frame::side_top_panel(&ctx.global_style()).fill(self.look.status_bar);
-        egui::Panel::bottom("status").exact_size(24.0).frame(status_frame).show(ui, |ui| self.status_bar(ui));
+        let shape = self.look.shape;
+        egui::Panel::top("menu")
+            .frame(self.look.menu_frame())
+            .show_separator_line(shape.column_lines)
+            .show(ui, |ui| self.menu_bar(ui, &mut actions));
+        egui::Panel::bottom("status")
+            .exact_size(shape.status_height)
+            .frame(self.look.status_frame())
+            .show_separator_line(shape.column_lines)
+            .show(ui, |ui| self.status_bar(ui));
         // The side columns stand a shade apart from the work between them.
-        let side_frame = egui::Frame::side_top_panel(&ctx.global_style())
-            .fill(self.look.sidebar)
-            .inner_margin(egui::Margin::symmetric(8, 6));
+        let side_frame = self.look.side_frame();
         // The projects list is made first, so it is outermost on its side; the file tree sits
         // inside it when they share a side.
         side_panel(self.settings.projects_on_right(), "sidebar")
-            .frame(side_frame)
+            .frame(self.look.projects_frame())
+            .show_separator_line(shape.column_lines)
             .resizable(true)
             .default_size(190.0)
             .size_range(120.0..=360.0)
@@ -3721,6 +3785,7 @@ impl eframe::App for ThrongApp {
         if self.show_explorer && self.book.active_id().is_some() {
             side_panel(self.settings.file_tree_on_right(), "explorer")
                 .frame(side_frame)
+                .show_separator_line(shape.column_lines)
                 .resizable(true)
                 .default_size(260.0)
                 .size_range(150.0..=600.0)
@@ -3728,11 +3793,14 @@ impl eframe::App for ThrongApp {
                     self.explorer_panel(ui, &ctx);
                 });
         }
-        egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(ui.style()).inner_margin(egui::Margin::same(4)))
-            .show(ui, |ui| {
+        // The work area: on its own card in a card style, else straight on the ground.
+        let (ground, card) = crate::style::work_frames(&shape, &self.look.grounds);
+        egui::CentralPanel::default().frame(ground).show(ui, |ui| {
+            card.show(ui, |ui| {
+                ui.set_min_size(ui.available_size());
                 self.central(ui, &mut actions);
             });
+        });
 
         let dropped: Vec<PathBuf> =
             ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
@@ -3756,6 +3824,7 @@ impl eframe::App for ThrongApp {
                 icon_packs: &pack_names,
                 path: &path,
                 system_dark: ctx.system_theme().is_none_or(|t| t == egui::Theme::Dark),
+                fonts: &mut self.system_fonts,
                 keymap: &mut self.keymap,
                 keybindings_path: &keybindings_path,
             };
@@ -3769,6 +3838,7 @@ impl eframe::App for ThrongApp {
                 ctx.request_repaint_after(Duration::from_millis(100));
             }
             self.apply_theme(&ctx);
+            self.apply_fonts(&ctx);
         }
         self.apply_actions(&ctx, actions);
         // Sub-workspace windows draw after the main one, so a terminal on screen in both is sized

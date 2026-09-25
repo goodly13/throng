@@ -61,6 +61,11 @@ syntect = { version = "5.3", default-features = false, features = ["default-fanc
 rfd = "0.17"
 # The update check's one request, off the UI thread (already in the tree through egui_extras).
 ehttp = "0.7"
+# An installed font chosen by family name (`appearance.interfaceFont`, `appearance.codeFont`):
+# fontdb finds it, and skrifa (egui's own font reader, already in the tree) checks it can be read
+# before egui is given it.
+fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "fontconfig"] }
+skrifa = "0.44"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

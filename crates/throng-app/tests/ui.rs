@@ -651,6 +651,10 @@ fn auto_save_writes_a_file_once_typing_stops() {
 /// Click the node labelled `label` as a hand does: press and release in separate frames.
 fn click_slowly(harness: &mut Harness<'static, ThrongApp>, label: &str) {
     let at = harness.get_by_label(label).rect().center();
+    click_slowly_at(harness, at);
+}
+
+fn click_slowly_at(harness: &mut Harness<'static, ThrongApp>, at: egui::Pos2) {
     let button = |pressed| egui::Event::PointerButton {
         pos: at,
         button: egui::PointerButton::Primary,
@@ -1766,6 +1770,34 @@ fn the_file_tree_moves_to_the_right_from_the_view_menu_and_stays_there() {
     click_slowly(&mut harness, "Move File Tree to the Left");
     steps(&mut harness, 3);
     assert!(harness.get_by_label("🗋 a.txt").rect().center().x < middle, "back on the left");
+}
+
+#[test]
+fn the_view_menu_switches_theme_and_style_at_once_and_writes_them() {
+    let env = Env::new();
+    let (_root, mut harness) = project_with(&env, &[("a.txt", "a\n")]);
+    let radius = |h: &Harness<'static, ThrongApp>| {
+        h.ctx.style_of(h.ctx.theme()).visuals.widgets.inactive.corner_radius
+    };
+    assert_eq!(radius(&harness), egui::CornerRadius::same(7), "Elevated to begin with");
+    // A submenu's button is named with its arrow after the name.
+    let submenu = |h: &Harness<'static, ThrongApp>, name: &str| {
+        h.get_by_label_contains(&format!("{name} ")).rect().center()
+    };
+    click_slowly(&mut harness, "View");
+    let style = submenu(&harness, "Style");
+    click_slowly_at(&mut harness, style);
+    click_slowly(&mut harness, "Compact");
+    steps(&mut harness, 3);
+    assert_eq!(radius(&harness), egui::CornerRadius::same(2));
+    click_slowly(&mut harness, "View");
+    let theme = submenu(&harness, "Theme");
+    click_slowly_at(&mut harness, theme);
+    click_slowly(&mut harness, "Nord");
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().theme_name(), "Nord");
+    let written = std::fs::read_to_string(env.dirs.settings_file()).unwrap();
+    assert!(written.contains("\"style\": \"compact\"") && written.contains("\"Nord\""), "{written}");
 }
 
 #[test]
