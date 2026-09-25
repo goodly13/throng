@@ -86,12 +86,14 @@ pub fn encode(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
 }
 
 /// The kitty keyboard protocol's enhancements a program switched on (with `CSI > flags u`; the
-/// emulator keeps the stack). throng encodes the first and fourth: disambiguation, which is what
-/// lets a program tell Shift+Enter from Enter, and reporting every key as an escape code.
+/// emulator keeps the stack). throng encodes the first, fourth and fifth: disambiguation, which is
+/// what lets a program tell Shift+Enter from Enter, reporting every key as an escape code, and the
+/// text a key typed alongside it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Kitty {
     pub disambiguate: bool,
     pub all_keys: bool,
+    pub associated_text: bool,
 }
 
 impl Kitty {
@@ -113,10 +115,30 @@ pub fn csi_u(code: u32, m: Modifiers) -> Vec<u8> {
     if mods > 1 { format!("\x1b[{code};{mods}u").into_bytes() } else { format!("\x1b[{code}u").into_bytes() }
 }
 
+/// `CSI code ; mods ; text u`: a key with the text it typed as code points, which is how a program
+/// that asked for every key as an escape code learns what was typed (`CSI 32;;32u` is a Space).
+#[must_use]
+pub fn csi_u_text(code: u32, m: Modifiers, text: &str) -> Vec<u8> {
+    let mods = kitty_mods(m);
+    let mods = if mods > 1 { mods.to_string() } else { String::new() };
+    let text: Vec<String> = text.chars().map(|c| u32::from(c).to_string()).collect();
+    format!("\x1b[{code};{mods};{}u", text.join(":")).into_bytes()
+}
+
 /// A key press under the kitty protocol, or `None` where the legacy encoding stands (arrows, the
 /// function keys, and plain text while only disambiguation is on).
 #[must_use]
 pub fn encode_kitty(key: Key, m: Modifiers, kitty: Kitty) -> Option<Vec<u8>> {
+    encode_kitty_typed(key, m, kitty, None)
+}
+
+/// [`encode_kitty`] for a press that typed `text`, which rides along when the program asked for it.
+#[must_use]
+pub fn encode_kitty_typed(key: Key, m: Modifiers, kitty: Kitty, text: Option<&str>) -> Option<Vec<u8>> {
+    let csi_u = |code: u32, m: Modifiers| match text.filter(|_| kitty.all_keys && kitty.associated_text) {
+        Some(text) => csi_u_text(code, m, text),
+        None => csi_u(code, m),
+    };
     if !kitty.on() {
         return None;
     }
@@ -245,7 +267,7 @@ mod tests {
 
     #[test]
     fn the_kitty_protocol_tells_modified_keys_apart_and_leaves_plain_ones_alone() {
-        let on = Kitty { disambiguate: true, all_keys: false };
+        let on = Kitty { disambiguate: true, ..Kitty::default() };
         let shift = Modifiers::SHIFT;
         let ctrl = Modifiers { ctrl: true, command: !cfg!(target_os = "macos"), ..Modifiers::NONE };
         assert_eq!(encode_kitty(Key::Enter, shift, on), Some(b"\x1b[13;2u".to_vec()), "Shift+Enter");
@@ -258,7 +280,7 @@ mod tests {
         assert_eq!(encode_kitty(Key::A, ctrl, on), Some(b"\x1b[97;5u".to_vec()), "Ctrl+A");
         assert_eq!(encode_kitty(Key::A, Modifiers::NONE, on), None, "text stays text");
         assert_eq!(encode_kitty(Key::ArrowUp, shift, on), None, "arrows keep their CSI form");
-        let all = Kitty { disambiguate: true, all_keys: true };
+        let all = Kitty { disambiguate: true, all_keys: true, ..Kitty::default() };
         assert_eq!(encode_kitty(Key::A, Modifiers::NONE, all), Some(b"\x1b[97u".to_vec()));
         assert_eq!(encode_kitty(Key::Enter, Modifiers::NONE, all), Some(b"\x1b[13u".to_vec()));
         assert_eq!(encode_kitty(Key::Enter, shift, Kitty::default()), None, "off: legacy");

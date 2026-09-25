@@ -270,30 +270,39 @@ fn keyboard(ui: &Ui, view: &mut TerminalView, mode: TermMode, out: &mut TermOutp
     let kitty = keys::Kitty {
         disambiguate: mode.contains(TermMode::DISAMBIGUATE_ESC_CODES),
         all_keys: mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC),
+        associated_text: mode.contains(TermMode::REPORT_ASSOCIATED_TEXT),
     };
     let ctrl = egui::Modifiers { ctrl: true, ..egui::Modifiers::NONE };
-    let mut skip_text = false;
-    for event in events {
+    let mut events = events.into_iter().peekable();
+    while let Some(event) = events.next() {
         match event {
             // While an input method composes, Enter and Backspace are its, not the program's.
             Event::Key { pressed: true, .. } if view.preedit.is_some() => {}
             Event::Key { key, pressed: true, modifiers, .. } => {
-                if let Some(bytes) = keys::encode_kitty(key, modifiers, kitty) {
+                // egui-winit sends the text a press typed straight after its key event; a chord
+                // (Ctrl) types none, so the next event is then another key's.
+                let text = match events.peek() {
+                    Some(Event::Text(text)) => Some(text.clone()),
+                    _ => None,
+                };
+                let reported = if let Some(bytes) =
+                    keys::encode_kitty_typed(key, modifiers, kitty, text.as_deref())
+                {
                     out.input.extend(bytes);
-                    skip_text = true;
+                    true
                 } else if let Some(bytes) = keys::encode(key, modifiers, mode.contains(TermMode::APP_CURSOR))
                 {
                     out.input.extend(bytes);
-                    skip_text = modifiers.ctrl || (modifiers.alt && keys::alt_is_meta());
-                }
-            }
-            Event::Text(text) => {
-                if skip_text {
-                    skip_text = false;
+                    modifiers.ctrl || (modifiers.alt && keys::alt_is_meta())
                 } else {
-                    out.input.extend_from_slice(text.as_bytes());
+                    false
+                };
+                // A reported key's text is in its report, and is not typed a second time.
+                if reported && text.is_some() {
+                    events.next();
                 }
             }
+            Event::Text(text) => out.input.extend_from_slice(text.as_bytes()),
             Event::Copy => {
                 let selection = view.term().selection_to_string().filter(|s| !s.is_empty());
                 if let Some(text) = selection {
@@ -654,4 +663,62 @@ fn paint(
         painter.galley(badge.min + vec2(4.0, 2.0), galley, palette.background);
     }
     let _ = Color32::TRANSPARENT;
+}
+
+#[cfg(test)]
+mod keyboard_tests {
+    use super::*;
+    use egui::{Key, Modifiers};
+    use throng_core::ids::PanelId;
+
+    fn press(key: Key, modifiers: Modifiers) -> Event {
+        Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+    }
+
+    /// The bytes a frame's key and text events send once the program wrote `program`.
+    fn typed(program: &[u8], events: Vec<Event>) -> Vec<u8> {
+        let mut view = TerminalView::new(PanelId::new(), 1000);
+        view.feed(0, program);
+        let mode = view.mode();
+        let mut out = TermOutput::default();
+        let ctx = egui::Context::default();
+        let input = egui::RawInput { events, ..Default::default() };
+        let mut output = ctx.run_ui(input, |ui| keyboard(ui, &mut view, mode, &mut out));
+        output.textures_delta.clear();
+        out.input
+    }
+
+    // Textual (OpenHands CLI and others) pushes disambiguate | report all keys | associated text
+    // and takes a key's character from the text parameter: `CSI 32u` is a Space that types
+    // nothing, so without the text the Space bar and capitals are dead.
+    #[test]
+    fn keys_reported_as_escape_codes_carry_the_text_they_typed() {
+        const TEXTUAL: &[u8] = b"\x1b[>25u";
+        let none = Modifiers::NONE;
+        let shift = Modifiers { shift: true, ..none };
+        let ctrl = Modifiers { ctrl: true, ..none };
+        let space = vec![press(Key::Space, none), Event::Text(" ".into())];
+        assert_eq!(typed(TEXTUAL, space.clone()), b"\x1b[32;;32u", "Space");
+        let a = vec![press(Key::A, shift), Event::Text("A".into())];
+        assert_eq!(typed(TEXTUAL, a), b"\x1b[97;2;65u", "Shift+A");
+        // A chord types nothing (egui sends no text with Ctrl), so it has no text parameter.
+        assert_eq!(typed(TEXTUAL, vec![press(Key::C, ctrl)]), b"\x1b[99;5u", "Ctrl+C");
+        // Every key as an escape code but no text asked for: none is sent.
+        assert_eq!(typed(b"\x1b[>9u", space.clone()), b"\x1b[32u");
+        // Disambiguation alone leaves typing as text.
+        assert_eq!(typed(b"\x1b[>1u", space.clone()), b" ");
+        assert_eq!(typed(b"", space), b" ");
+    }
+
+    #[test]
+    fn an_encoded_key_without_text_does_not_swallow_the_next_keys_text() {
+        let none = Modifiers::NONE;
+        let ctrl = Modifiers { ctrl: true, ..none };
+        // Ctrl+U then "x" in one frame: egui sends no text for the chord.
+        let events = vec![press(Key::U, ctrl), press(Key::X, none), Event::Text("x".into())];
+        assert_eq!(typed(b"", events.clone()), b"\x15x");
+        assert_eq!(typed(b"\x1b[>1u", events), b"\x1b[117;5ux");
+        let events = vec![press(Key::Escape, none), press(Key::Space, none), Event::Text(" ".into())];
+        assert_eq!(typed(b"\x1b[>1u", events), b"\x1b[27u ");
+    }
 }
