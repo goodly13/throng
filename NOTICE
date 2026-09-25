@@ -468,14 +468,14 @@ Theme palettes (crates/throng-core/src/theme/palettes.rs)
 Several built-in themes are converted from colour palettes published under the MIT License.
 Their colour values were adapted to throng's tokens and readability rules:
 
-- Tokyo Night, https://github.com/enkia/tokyo-night-vscode-theme, Copyright (c) Enkia
-- Catppuccin (Mocha, Latte), https://github.com/catppuccin/catppuccin, Copyright (c) Catppuccin
-- Nord, https://github.com/nordtheme/nord, Copyright (c) Sven Greb (Arctic Ice Studio)
-- Dracula, https://github.com/dracula/dracula-theme, Copyright (c) Dracula Theme
-- Gruvbox, https://github.com/morhetz/gruvbox, Copyright (c) Pavel Pertsev
-- Rose Pine, https://github.com/rose-pine/rose-pine-theme, Copyright (c) Rose Pine
-- One Dark, https://github.com/atom/atom, Copyright (c) GitHub Inc.
-- Solarized, https://github.com/altercation/solarized, Copyright (c) Ethan Schoonover
+- Tokyo Night, https://github.com/enkia/tokyo-night-vscode-theme, Copyright (c) 2018-present Enkia
+- Catppuccin (Mocha, Latte), https://github.com/catppuccin/catppuccin, Copyright (c) 2021 Catppuccin
+- Nord, https://github.com/nordtheme/nord, Copyright (c) 2016-present Sven Greb
+- Dracula, https://github.com/dracula/dracula-theme, Copyright (c) 2023 Dracula Theme
+- Gruvbox, https://github.com/morhetz/gruvbox, Copyright (c) Pavel Pertsev (MIT/X11, per its README)
+- Rosé Pine, https://github.com/rose-pine/rose-pine-theme, Copyright (c) 2023 Rosé Pine
+- One Dark, https://github.com/atom/one-dark-syntax, Copyright (c) 2016 GitHub Inc.
+- Solarized, https://github.com/altercation/solarized, Copyright (c) 2011 Ethan Schoonover
 
 The MIT License (MIT) (for the palettes listed above)
 
