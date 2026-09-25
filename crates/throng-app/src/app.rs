@@ -3232,9 +3232,11 @@ impl ThrongApp {
                         } else {
                             RichText::new(&project.name)
                         };
-                        // The row's full width is the project's to hover and click.
+                        // The row's full width is the project's to hover and click; a long name is
+                        // cut short so it never sets the column's width.
                         ui.add(
                             egui::Button::selectable(selected, (text, egui::Atom::grow()))
+                                .truncate()
                                 .frame_when_inactive(false)
                                 .min_size(egui::vec2(ui.available_width(), 0.0)),
                         )

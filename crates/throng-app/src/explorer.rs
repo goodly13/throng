@@ -479,8 +479,11 @@ impl Explorer {
             if entry.is_symlink {
                 text = text.italics();
             }
-            // The name's button fills the row: hover, selection and clicks reach its full width.
+            // The name's button fills the row: hover, selection and clicks reach its full width. A
+            // long name is cut short rather than widening the row, or the column could not be
+            // dragged narrower than its longest name.
             let label = egui::Button::selectable(selected, (icon, text, egui::Atom::grow()))
+                .truncate()
                 .frame_when_inactive(false)
                 .min_size(egui::vec2(ui.available_width(), 0.0))
                 .sense(Sense::click_and_drag());
