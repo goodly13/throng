@@ -472,12 +472,35 @@ missing. [Open work](#open-work) collects every gap in one list.
   project name in the tree's header is cut short with an ellipsis rather than drawn under its
   buttons.
 - **FR-053** The look, after shadcn/ui.
-  - **Type and icons.** The interface is set in Inter (bundled; egui's own fonts after it for
-    symbols and emoji), section titles in Inter SemiBold as small spaced capitals. throng's own
-    icons are Lucide's (bundled SVGs), drawn in the text's colour. Their licences are in `NOTICE`.
-  - **Controls.** Corners are rounded (6 px, menus and windows 8 px), borders are hairlines, and
-    icon buttons show a frame only under the pointer. The side columns and the status bar take
-    the theme's `sidebarBg` and `statusBarBg`.
+  - **Type and icons.** `appearance.interfaceFont` sets the interface (default Inter) and
+    `appearance.codeFont` terminals and editors (default JetBrains Mono). throng ships Inter and
+    Geist for the interface, and JetBrains Mono, Fira Code and egui's Hack for code, so every
+    choice draws offline; any installed family can be named too. A family that cannot be found
+    or read draws in the default, and one notice names it until the setting is fixed. The
+    shipped defaults and egui's own fonts always follow the chosen font, so every glyph still
+    draws (FR-044). Section titles are in the interface font's semibold as small spaced capitals.
+    throng's own icons are Lucide's (bundled SVGs), drawn in the text's colour. The fonts' and
+    icons' licences are in `NOTICE`. This replaces the fixed Inter-only interface.
+  - **Styles.** `appearance.style` shapes the interface apart from its colours; View → Style
+    switches it at once. Terminals and editors are drawn the same in every style.
+    - *Classic*: corners 6 px (menus and windows 8 px), flat columns divided by hairlines.
+    - *Soft*: corners 8 px (12 px), roomier rows and spacing, deeper shadows under menus and
+      windows, and the open workspace tab a filled pill.
+    - *Compact*: corners 2 px, tight rows, smaller text and bars, light shadows.
+    - *Elevated* (the default): the work area is a card with 12 px corners and a hairline border,
+      set in a gutter on the window's ground, which is the theme's `appBg` a step darker (on a
+      black ground the card is lifted instead). The menu bar, status bar and projects list sit on
+      that ground; the file tree keeps `sidebarBg`. The open tab is a filled pill and the active
+      project carries the theme's accent as a bar.
+
+    It replaces the fixed look (the one Classic keeps) as the default because the flat look read
+    as bland. Borders are hairlines and icon buttons show a frame only under the pointer in every
+    style. The side columns and the status bar take the theme's `sidebarBg` and `statusBarBg`,
+    except where Elevated puts them on the window's ground.
+  - **Menus.** View → Theme lists every theme with the one in force marked and applies a choice
+    at once, and offers *Edit Themes…*. On macOS a first *throng* menu holds About, Preferences…
+    and Quit, as a Mac app's does; elsewhere Preferences… and Quit are in File. Preferences →
+    Settings opens on its Appearance group: theme, style, fonts, scale and the columns' sides.
   - **File tree.** A row's full width is its own to hover, select and click, and rows touch.
     Faint guides mark each level of nesting. Folders are drawn in the project's colour, and files
     in the muted text colour with an icon for their kind (code, JSON, text, image, script,
@@ -496,10 +519,18 @@ missing. [Open work](#open-work) collects every gap in one list.
   that notice and never adds a second (Principle VI). Startup failures MUST be shown and logged,
   never silent. Logs rotate at a size cap.
 - **FR-041** Themes.
-  - **Built-in themes.** Fifteen ship, with 39 colour tokens across General, Editor, Syntax,
-    Terminal and Search. A derived theme lifts every syntax hue to 6:1 on the editor body. It tints
-    the search surfaces only as far as code still reads at 4.5:1 through them. The gutter is the
-    body offset by 9% on a dark theme and 6% on a light one.
+  - **Built-in themes.** Twenty-eight ship, with 39 colour tokens across General, Editor, Syntax,
+    Terminal and Search. Beside throng's first fifteen are four converted from 21st.dev community
+    themes (Darkmatter, Slate Dark, Amber Dark, Violet Dark) and nine developer palettes (Tokyo
+    Night, Catppuccin Mocha and Latte, Nord, Dracula, Gruvbox Dark, Rosé Pine, One Dark,
+    Solarized Light); each source is credited in the code and the MIT ones in `NOTICE`. A derived
+    theme lifts every syntax hue to 6:1 on the editor body, and muted text to 4.5:1 on the app
+    and sidebar grounds. It tints the search surfaces only as far as code still reads at 4.5:1
+    through them. The gutter is the body offset by 9% on a dark theme and 6% on a light one.
+  - **Terminal colours.** A theme may carry its own sixteen ANSI colours (`"ansi"` in its file,
+    all sixteen or none); without them the terminal uses throng's for a light or dark ground. A
+    built-in's are lifted to 4.5:1 on the terminal's ground (bright black, the dim one, to 3:1),
+    except the colours that are the ground's own end of the scale.
   - **Choosing.** `appearance.theme` names a theme; the default is `throng`. `dark`, `light` and
     `system` also resolve. A name no theme has falls back to `throng`, and the file is not
     rewritten.

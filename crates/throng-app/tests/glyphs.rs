@@ -66,14 +66,45 @@ fn every_ui_glyph_is_in_the_proportional_font() {
     // throng's own icon glyphs, which the app draws by token.
     glyphs.extend(throng_core::icons::ICONS.iter().flat_map(|i| i.glyph.chars()));
     literal_glyphs(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut glyphs);
+    // The built-in themes' names, which the theme menus draw.
+    glyphs.extend(throng_core::theme::builtins().iter().flat_map(|t| t.name.chars().collect::<Vec<_>>()));
     assert!(glyphs.contains(&'🗙') && glyphs.contains(&'›'), "the scan finds the UI's symbols: {glyphs:?}");
-    let ctx = egui::Context::default();
-    let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
-    output.textures_delta.clear();
-    let font = egui::FontId::proportional(14.0);
-    let missing: Vec<char> =
-        glyphs.iter().copied().filter(|c| !ctx.fonts_mut(|f| f.has_glyph(&font, *c))).collect();
-    let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
-    output.textures_delta.clear();
-    assert!(missing.is_empty(), "glyphs that would render as boxes: {missing:?}");
+    assert!(glyphs.contains(&'\u{e9}'), "the theme names are scanned: {glyphs:?}");
+    // egui's own fonts, and every pairing of the fonts throng ships (the chosen font leads, and
+    // the defaults and egui's fonts follow it).
+    let mut setups: Vec<Option<(&str, &str)>> = vec![None];
+    for interface in throng_app::fonts::interface_fonts() {
+        for code in throng_app::fonts::code_fonts() {
+            setups.push(Some((interface, code)));
+        }
+    }
+    let mut system = throng_app::fonts::SystemFonts::default();
+    for setup in setups {
+        let ctx = egui::Context::default();
+        if let Some((interface, code)) = setup {
+            assert!(throng_app::fonts::install(&ctx, interface, code, &mut system).is_empty());
+        }
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        // The interface draws its symbols in the body and heading families; the code font draws
+        // what programs and files hold.
+        let fonts = [
+            egui::FontId::proportional(14.0),
+            egui::FontId::new(14.0, egui::FontFamily::Name(throng_app::fonts::HEADING.into())),
+        ];
+        let families = if setup.is_some() { &fonts[..] } else { &fonts[..1] };
+        let missing: Vec<(char, &egui::FontFamily)> = families
+            .iter()
+            .flat_map(|font| {
+                glyphs
+                    .iter()
+                    .copied()
+                    .filter(|c| !ctx.fonts_mut(|f| f.has_glyph(font, *c)))
+                    .map(move |c| (c, &font.family))
+            })
+            .collect();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        assert!(missing.is_empty(), "glyphs that would render as boxes with {setup:?}: {missing:?}");
+    }
 }
