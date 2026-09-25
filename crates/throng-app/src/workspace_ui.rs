@@ -621,13 +621,17 @@ fn tab_strip(
                 && *renaming_id == id
             {
                 let response = ui.add(egui::TextEdit::singleline(text).desired_width(120.0));
-                response.request_focus();
+                // Ask `lost_focus` before focusing: egui answers it when asked, so focusing first
+                // hides the Enter, Escape or click that just left the field. Focus is taken once,
+                // when the field appears, so a click elsewhere is free to end the rename.
                 if response.lost_focus() {
                     if ui.input(|i| !i.key_pressed(egui::Key::Escape)) {
                         ws.layout.rename_tab(id, text);
                         ws.mark_dirty();
                     }
                     *renaming = None;
+                } else if !response.has_focus() {
+                    response.request_focus();
                 }
                 continue;
             }

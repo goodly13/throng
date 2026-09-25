@@ -1835,3 +1835,48 @@ fn with_the_check_turned_off_nothing_is_asked() {
     assert_eq!(asked.load(Ordering::SeqCst), 0);
     assert!(update_notices(harness.state()).is_empty());
 }
+
+/// The tab strip's rename field, while it is open: the one text field showing a value.
+fn tab_rename_field(harness: &Harness<'static, ThrongApp>) -> bool {
+    use egui_kittest::kittest::NodeT as _;
+    harness
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .any(|n| n.accesskit_node().value().is_some_and(|v| !v.is_empty()))
+}
+
+fn tab_titles(app: &ThrongApp) -> Vec<String> {
+    app.active_layout().unwrap().tabs.iter().map(|t| t.title.clone()).collect()
+}
+
+#[test]
+fn a_tab_renamed_from_its_menu_ends_with_enter_a_click_elsewhere_or_escape() {
+    let env = Env::new();
+    let root = env.folder("tabs");
+    env.seed(&root, |_, _| {});
+    let mut harness = env.app(None);
+    steps(&mut harness, 3);
+    let mut title = "Tab 1".to_owned();
+    for (i, how) in ["Enter", "a click elsewhere", "Escape"].into_iter().enumerate() {
+        harness.get_by_label(&title).click_secondary();
+        steps(&mut harness, 3);
+        harness.get_by_label("Rename\u{2026}").click();
+        steps(&mut harness, 3);
+        assert!(tab_rename_field(&harness), "the tab's title opens for editing");
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        steps(&mut harness, 1);
+        let typed = format!("Renamed {i}");
+        harness.event(egui::Event::Text(typed.clone()));
+        steps(&mut harness, 1);
+        match how {
+            "Enter" => harness.key_press(Key::Enter),
+            "Escape" => harness.key_press(Key::Escape),
+            _ => click_slowly(&mut harness, "Panel 1"),
+        }
+        steps(&mut harness, 3);
+        assert!(!tab_rename_field(&harness), "{how} ends the rename");
+        if how != "Escape" {
+            title = typed;
+        }
+        assert_eq!(tab_titles(harness.state()), [title.clone()], "after {how}");
+    }
+}
