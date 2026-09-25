@@ -1880,3 +1880,41 @@ fn a_tab_renamed_from_its_menu_ends_with_enter_a_click_elsewhere_or_escape() {
         assert_eq!(tab_titles(harness.state()), [title.clone()], "after {how}");
     }
 }
+
+fn column(harness: &Harness<'static, ThrongApp>, id: &str) -> egui::Rect {
+    egui::containers::panel::PanelState::load(&harness.ctx, egui::Id::new(id))
+        .expect("column shown")
+        .outer_rect
+}
+
+/// Drag a column's inner edge by `by` (positive widens it), as a pointer does.
+fn drag_edge(harness: &mut Harness<'static, ThrongApp>, id: &str, by: f32) {
+    let rect = column(harness, id);
+    let on_right = rect.center().x > 640.0;
+    let from = egui::pos2(if on_right { rect.left() } else { rect.right() }, rect.center().y);
+    harness.event(egui::Event::PointerMoved(from));
+    steps(harness, 2);
+    drag(harness, from, from + egui::vec2(if on_right { -by } else { by }, 0.0), Modifiers::NONE);
+}
+
+#[test]
+fn the_side_columns_keep_the_width_they_are_dragged_to_even_with_long_names() {
+    let env = Env::new();
+    let root = env.folder("proj");
+    std::fs::write(root.join(format!("{}.txt", "a_rather_long_file_name_".repeat(4))), "x").unwrap();
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, PanelKind::Untyped);
+    });
+    let mut harness = env.app(None);
+    steps(&mut harness, 3);
+    for id in ["explorer", "sidebar"] {
+        for by in [120.0, -80.0] {
+            let before = column(&harness, id).width();
+            drag_edge(&mut harness, id, by);
+            steps(&mut harness, 3);
+            let after = column(&harness, id).width();
+            assert!((after - (before + by)).abs() < 2.0, "{id}: {before} dragged by {by} ended at {after}");
+        }
+    }
+}
