@@ -1,4 +1,4 @@
-//! The update check (FR-052): at start and once a day, ask where releases are published for the
+//! The update check (FR-054): at start and once a day, ask where releases are published for the
 //! latest one. What counts as newer, and what the user is told, is `throng_core::update`'s and the
 //! app's; this only fetches, off the UI thread.
 

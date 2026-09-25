@@ -1,29 +1,36 @@
 //! Look and feel: the active theme's tokens turned into egui visuals, editor and terminal colours,
-//! and syntax colours. The project colour stays the project's mark (its dot, its pane border); the
-//! theme owns everything else, so a theme reads the same whichever project is open.
-
-use std::sync::Arc;
+//! and syntax colours, laid out in the chosen interface style ([`crate::style`]). The project
+//! colour stays the project's mark (its dot, its pane border); the theme owns everything else, so a
+//! theme reads the same whichever project is open.
 
 use egui::{
-    Color32, Context, CornerRadius, FontFamily, FontId, Margin, RichText, Shadow, Stroke, TextStyle,
-    ThemePreference, Visuals, vec2,
+    Color32, Context, CornerRadius, FontFamily, FontId, Frame, Margin, RichText, Stroke, TextStyle,
+    ThemePreference, Visuals,
 };
 use throng_core::project::Colour;
 use throng_core::theme::Theme;
 use throng_editor::highlight::{SyntaxColours, build_theme};
 
 use crate::code::CodeColours;
+use crate::style::{Grounds, Shape, Style};
 use crate::term::colors::Palette;
 
-/// Everything drawn from one theme.
+pub use crate::fonts::HEADING;
+
+/// Everything drawn from one theme in one style.
 #[derive(Clone, Debug)]
 pub struct Look {
     pub name: String,
     pub dark: bool,
+    pub style: Style,
+    pub shape: Shape,
+    pub grounds: Grounds,
     pub visuals: Visuals,
     /// The side columns' ground (the projects list and the file tree).
     pub sidebar: Color32,
     pub status_bar: Color32,
+    /// The theme's accent, for the bar beside an active item.
+    pub accent: Color32,
     pub code: CodeColours,
     pub palette: Palette,
     pub syntax: SyntaxColours,
@@ -31,13 +38,22 @@ pub struct Look {
 
 impl Look {
     #[must_use]
-    pub fn new(theme: &Theme) -> Self {
+    pub fn new(theme: &Theme, style: Style) -> Self {
+        let shape = style.shape();
+        let dark = theme.is_dark();
+        let grounds = crate::style::grounds(&shape, token(theme, "appBg"), token(theme, "border"), dark);
+        let mut visuals = visuals(theme, &shape);
+        visuals.panel_fill = grounds.work;
         Self {
             name: theme.name.clone(),
-            dark: theme.is_dark(),
-            visuals: visuals(theme),
+            dark,
+            style,
+            shape,
+            grounds,
+            visuals,
             sidebar: token(theme, "sidebarBg"),
             status_bar: token(theme, "statusBarBg"),
+            accent: token(theme, "accent"),
             code: code_colours(theme),
             palette: palette(theme),
             syntax: syntax_colours(theme),
@@ -49,11 +65,39 @@ impl Look {
     pub fn syntax_theme(&self) -> syntect::highlighting::Theme {
         build_theme(&self.syntax)
     }
+
+    /// The menu bar's frame: on the window's ground.
+    pub fn menu_frame(&self) -> Frame {
+        Frame::new().fill(self.grounds.window).inner_margin(Margin::symmetric(8, 2))
+    }
+
+    /// Whether the work sits on a card, with the window's chrome on a ground of its own.
+    fn carded(&self) -> bool {
+        self.shape.card_radius.is_some()
+    }
+
+    /// The status bar's frame: its own colour, or the window's ground around a card.
+    pub fn status_frame(&self) -> Frame {
+        let fill = if self.carded() { self.grounds.window } else { self.status_bar };
+        Frame::new().fill(fill).inner_margin(Margin::symmetric(8, 2))
+    }
+
+    /// A side column's frame: its own surface, a shade apart from the work between the columns.
+    pub fn side_frame(&self) -> Frame {
+        Frame::new().fill(self.sidebar).inner_margin(self.shape.side_margin)
+    }
+
+    /// The projects column's frame. Around a card it is part of the window's chrome, so the
+    /// file tree beside it stands out as a surface of its own.
+    pub fn projects_frame(&self) -> Frame {
+        let frame = self.side_frame();
+        if self.carded() { frame.fill(self.grounds.window) } else { frame }
+    }
 }
 
 impl Default for Look {
     fn default() -> Self {
-        Self::new(&throng_core::theme::builtins()[0])
+        Self::new(&throng_core::theme::builtins()[0], Style::default())
     }
 }
 
@@ -65,7 +109,7 @@ pub fn apply(ctx: &Context, look: &Look, ui_scale: f32) {
     for slot in [egui::Theme::Dark, egui::Theme::Light] {
         ctx.style_mut_of(slot, |style| {
             style.visuals = look.visuals.clone();
-            proportions(style);
+            proportions(style, &look.shape);
         });
     }
     if (ctx.zoom_factor() - ui_scale).abs() > f32::EPSILON {
@@ -74,49 +118,25 @@ pub fn apply(ctx: &Context, look: &Look, ui_scale: f32) {
 }
 
 /// The interface's measure: text sizes, and the room between and inside controls.
-fn proportions(style: &mut egui::Style) {
+fn proportions(style: &mut egui::Style, shape: &Shape) {
     let s = &mut style.spacing;
-    s.item_spacing = vec2(8.0, 4.0);
-    s.button_padding = vec2(6.0, 3.0);
-    s.menu_margin = Margin::same(6);
-    s.window_margin = Margin::same(12);
+    s.item_spacing = shape.item_spacing;
+    s.button_padding = shape.button_padding;
+    s.interact_size.y = shape.row_height;
+    s.menu_margin = Margin::same(shape.menu_margin);
+    s.window_margin = Margin::same(shape.window_margin);
     s.icon_spacing = 6.0;
     s.indent = 16.0;
     let heading = FontFamily::Name(HEADING.into());
+    let [body, small, title, mono] = shape.text;
     style.text_styles = [
-        (TextStyle::Small, FontId::proportional(10.5)),
-        (TextStyle::Body, FontId::proportional(13.0)),
-        (TextStyle::Button, FontId::proportional(13.0)),
-        (TextStyle::Heading, FontId::new(18.0, heading)),
-        (TextStyle::Monospace, FontId::monospace(12.5)),
+        (TextStyle::Small, FontId::proportional(small)),
+        (TextStyle::Body, FontId::proportional(body)),
+        (TextStyle::Button, FontId::proportional(body)),
+        (TextStyle::Heading, FontId::new(title, heading)),
+        (TextStyle::Monospace, FontId::monospace(mono)),
     ]
     .into();
-}
-
-/// The family section titles and headings are set in: Inter SemiBold.
-pub const HEADING: &str = "heading";
-
-/// The interface's fonts: Inter, then egui's own for the symbols and emoji Inter has not.
-pub fn install_fonts(ctx: &Context) {
-    let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        "Inter".into(),
-        Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Inter-Regular.ttf"))),
-    );
-    fonts.font_data.insert(
-        "Inter SemiBold".into(),
-        Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Inter-SemiBold.ttf"))),
-    );
-    let fallbacks = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-    fonts.families.insert(
-        FontFamily::Proportional,
-        std::iter::once("Inter".to_owned()).chain(fallbacks.iter().cloned()).collect(),
-    );
-    fonts.families.insert(
-        FontFamily::Name(HEADING.into()),
-        std::iter::once("Inter SemiBold".to_owned()).chain(fallbacks).collect(),
-    );
-    ctx.set_fonts(fonts);
 }
 
 /// A column's or group's title: small, spaced capitals in the muted text colour.
@@ -149,9 +169,9 @@ fn blend(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
 }
 
-/// egui's visuals from a theme's general tokens.
+/// egui's visuals from a theme's general tokens, in a style's shape.
 #[must_use]
-pub fn visuals(theme: &Theme) -> Visuals {
+pub fn visuals(theme: &Theme, shape: &Shape) -> Visuals {
     let t = |key| token(theme, key);
     let dark = theme.is_dark();
     let mut v = if dark { Visuals::dark() } else { Visuals::light() };
@@ -168,15 +188,16 @@ pub fn visuals(theme: &Theme) -> Visuals {
     v.error_fg_color = t("danger");
     v.warn_fg_color = t("warning");
     v.weak_text_color = Some(muted);
-    v.selection.bg_fill = blend(accent, surface, 0.45);
+    // A pill style fills a selection more gently: the pill's shape already marks it.
+    v.selection.bg_fill = blend(accent, surface, if shape.pills { 0.32 } else { 0.45 });
     v.selection.stroke = Stroke::new(1.0, text);
     v.text_cursor.stroke.color = t("editorCursor");
-    // Rounded, hairline-bordered and lightly lifted, in the manner of shadcn/ui.
-    v.window_corner_radius = CornerRadius::same(8);
-    v.menu_corner_radius = CornerRadius::same(8);
+    // Rounded, hairline-bordered and lifted as far as the style says.
+    v.window_corner_radius = CornerRadius::same(shape.window_radius);
+    v.menu_corner_radius = CornerRadius::same(shape.window_radius);
     let shadow = Color32::from_black_alpha(if dark { 90 } else { 28 });
-    v.window_shadow = Shadow { offset: [0, 8], blur: 24, spread: 0, color: shadow };
-    v.popup_shadow = Shadow { offset: [0, 4], blur: 12, spread: 0, color: shadow };
+    v.window_shadow = shape.shadow(8, 24, shadow);
+    v.popup_shadow = shape.shadow(4, 12, shadow);
 
     let w = &mut v.widgets;
     w.noninteractive.bg_fill = t("appBg");
@@ -199,7 +220,7 @@ pub fn visuals(theme: &Theme) -> Visuals {
     w.open.bg_stroke = Stroke::new(1.0, border);
     w.open.fg_stroke = Stroke::new(1.0, text);
     for state in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
-        state.corner_radius = CornerRadius::same(6);
+        state.corner_radius = CornerRadius::same(shape.control_radius);
     }
     // Controls show a frame when they are hovered or pressed, not at rest.
     w.inactive.bg_stroke = Stroke::new(1.0, blend(border, surface, 0.6));
@@ -233,8 +254,8 @@ pub fn code_colours(theme: &Theme) -> CodeColours {
     }
 }
 
-/// The terminal palette: the theme's ground, text, cursor and selection over the ANSI colours for
-/// a light or dark ground.
+/// The terminal palette: the theme's ground, text, cursor and selection over its own ANSI colours,
+/// else throng's for a light or dark ground.
 #[must_use]
 pub fn palette(theme: &Theme) -> Palette {
     let t = |key| token(theme, key);
@@ -244,7 +265,7 @@ pub fn palette(theme: &Theme) -> Palette {
         background: t("terminalBg"),
         cursor: t("terminalCursor"),
         selection: t("terminalSelection"),
-        ..base
+        ansi: theme.ansi().map_or(base.ansi, |ansi| ansi.map(to_color32)),
     }
 }
 
@@ -284,7 +305,7 @@ mod tests {
     fn a_light_theme_draws_light_and_its_tokens_reach_every_surface() {
         let themes = throng_core::theme::builtins();
         let light = themes.iter().find(|t| t.name == "Light").unwrap();
-        let look = Look::new(light);
+        let look = Look::new(light, Style::Classic);
         assert!(!look.dark && !look.visuals.dark_mode);
         assert_eq!(look.visuals.panel_fill, token(light, "appBg"));
         assert_eq!(look.code.background, token(light, "editorBg"));
@@ -297,8 +318,30 @@ mod tests {
                 light.colour("syntaxKeyword").b
             ]
         );
-        let dark = Look::new(&themes[0]);
+        let dark = Look::new(&themes[0], Style::Classic);
         assert!(dark.dark && dark.visuals.dark_mode);
         assert_ne!(dark.palette.ansi, look.palette.ansi, "ANSI colours suit the ground");
+        let nord = themes.iter().find(|t| t.name == "Nord").unwrap();
+        let ansi = nord.ansi().unwrap();
+        assert_eq!(Look::new(nord, Style::Classic).palette.ansi[1], to_color32(ansi[1]), "its own");
+    }
+
+    #[test]
+    fn a_style_shapes_the_controls_and_keeps_the_themes_colours() {
+        let theme = &throng_core::theme::builtins()[0];
+        let classic = Look::new(theme, Style::Classic);
+        let compact = Look::new(theme, Style::Compact);
+        let soft = Look::new(theme, Style::Soft);
+        let elevated = Look::new(theme, Style::Elevated);
+        assert_eq!(classic.visuals.widgets.inactive.corner_radius, CornerRadius::same(6));
+        assert_eq!(compact.visuals.widgets.inactive.corner_radius, CornerRadius::same(2));
+        assert!(soft.visuals.window_corner_radius.nw >= 12 && soft.visuals.popup_shadow.blur > 12);
+        for look in [&classic, &compact, &soft] {
+            assert_eq!(look.visuals.panel_fill, token(theme, "appBg"));
+        }
+        assert_eq!(elevated.visuals.panel_fill, token(theme, "appBg"), "the card is the app's ground");
+        assert_ne!(elevated.grounds.window, elevated.grounds.work, "on a darker window ground");
+        assert_eq!(elevated.code, classic.code);
+        assert_eq!(elevated.palette, classic.palette);
     }
 }

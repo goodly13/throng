@@ -66,6 +66,11 @@ sha2 = "0.10"
 # The in-app updater's downloads (tens of MB), with a body limit set here rather than a
 # library default; already in the tree through ehttp.
 ureq = "3"
+# An installed font chosen by family name (`appearance.interfaceFont`, `appearance.codeFont`):
+# fontdb finds it, and skrifa (egui's own font reader, already in the tree) checks it can be read
+# before egui is given it.
+fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "fontconfig"] }
+skrifa = "0.44"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

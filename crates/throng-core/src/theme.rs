@@ -1,13 +1,16 @@
-//! Themes: named sets of colour tokens, the ones the app draws with. Fifteen ship built in —
-//! `throng` and fourteen derived from a palette — and a user's own live as JSON files beside the
-//! settings. A theme file may name only some tokens; the rest come from `throng`, so a partial
-//! theme always draws.
+//! Themes: named sets of colour tokens, the ones the app draws with. Twenty-eight ship built in —
+//! `throng` and twenty-seven derived from a palette — and a user's own live as JSON files beside
+//! the settings. A theme file may name only some tokens; the rest come from `throng`, so a partial
+//! theme always draws. A theme may also carry its own sixteen terminal colours (`ansi`); one that
+//! does not uses throng's for a light or dark ground.
 
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
 
 use crate::project::Colour;
+
+mod palettes;
 
 /// A token a theme sets, and where the preferences editor groups it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,11 +75,19 @@ pub const DEFAULT_THEME: &str = "throng";
 pub struct Theme {
     pub name: String,
     colours: BTreeMap<&'static str, Colour>,
+    /// The terminal's sixteen ANSI colours, when the theme sets its own.
+    ansi: Option<[Colour; 16]>,
     /// Shipped with throng, so never written or deleted.
     pub builtin: bool,
 }
 
 impl Theme {
+    /// The terminal's sixteen ANSI colours, when the theme sets its own.
+    #[must_use]
+    pub fn ansi(&self) -> Option<[Colour; 16]> {
+        self.ansi
+    }
+
     /// A token's colour. Every token is always present.
     #[must_use]
     pub fn colour(&self, key: &str) -> Colour {
@@ -95,8 +106,9 @@ impl Theme {
         self.colour("appBg").luminance() < 0.4
     }
 
-    /// Read a theme file: `{ "name": …, "colours": { token: "#rrggbb" } }`. Tokens it does not set
-    /// come from `base`; unknown tokens and other keys are left alone (and kept by [`Self::write_into`]).
+    /// Read a theme file: `{ "name": …, "colours": { token: "#rrggbb" }, "ansi": [16 × "#rrggbb"] }`.
+    /// Tokens it does not set come from `base`, and so does `ansi` unless the file gives all
+    /// sixteen; unknown tokens and other keys are left alone (and kept by [`Self::write_into`]).
     pub fn parse(text: &str, base: &Theme) -> Result<Self, String> {
         let value: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let name = value
@@ -105,12 +117,20 @@ impl Theme {
             .map(str::trim)
             .filter(|n| !n.is_empty())
             .ok_or("A theme needs a \"name\".")?;
-        let mut theme = Theme { name: name.to_owned(), colours: base.colours.clone(), builtin: false };
+        let mut theme =
+            Theme { name: name.to_owned(), colours: base.colours.clone(), ansi: base.ansi, builtin: false };
         if let Some(colours) = value.get("colours").and_then(Value::as_object) {
             for (key, raw) in colours {
                 if let Some(colour) = raw.as_str().and_then(|s| Colour::parse(s).ok()) {
                     theme.set(key, colour);
                 }
+            }
+        }
+        if let Some(ansi) = value.get("ansi").and_then(Value::as_array) {
+            let parsed: Vec<Colour> =
+                ansi.iter().filter_map(|v| v.as_str().and_then(|s| Colour::parse(s).ok())).collect();
+            if let Ok(all) = <[Colour; 16]>::try_from(parsed) {
+                theme.ansi = Some(all);
             }
         }
         Ok(theme)
@@ -129,6 +149,9 @@ impl Theme {
             colours.insert((*key).to_owned(), Value::String(colour.to_hex()));
         }
         doc.insert("colours".into(), Value::Object(colours));
+        if let Some(ansi) = self.ansi {
+            doc.insert("ansi".into(), Value::Array(ansi.iter().map(|c| Value::String(c.to_hex())).collect()));
+        }
         let mut text = serde_json::to_string_pretty(&Value::Object(doc)).expect("a JSON object serialises");
         text.push('\n');
         text
@@ -137,7 +160,7 @@ impl Theme {
     /// A copy under a new name, for editing (a built-in is never edited in place).
     #[must_use]
     pub fn cloned_as(&self, name: &str) -> Self {
-        Theme { name: name.to_owned(), colours: self.colours.clone(), builtin: false }
+        Theme { name: name.to_owned(), colours: self.colours.clone(), ansi: self.ansi, builtin: false }
     }
 }
 
@@ -351,6 +374,9 @@ struct Palette {
     unsaved: Option<&'static str>,
     /// keyword, string, comment, number, type, function, variable, operator, punctuation, invalid.
     syntax: [&'static str; 10],
+    /// The palette's own terminal colours: black, red, green, yellow, blue, magenta, cyan, white,
+    /// then the bright eight.
+    ansi: Option<[&'static str; 16]>,
 }
 
 const P: Palette = Palette {
@@ -372,7 +398,26 @@ const P: Palette = Palette {
     selection: None,
     unsaved: None,
     syntax: ["#ffffff"; 10],
+    ansi: None,
 };
+
+/// A palette's terminal colours made readable on the terminal's ground: each colour a program
+/// writes text in reaches 4.5:1 (bright black, used for dim text, 3:1), moved toward the
+/// terminal's text colour as far as that takes. The ground's own end of the scale (black on a dark
+/// ground, the two whites on a light one) is a background colour and is left alone.
+fn terminal_ansi(raw: [Colour; 16], ground: Colour, text: Colour) -> [Colour; 16] {
+    let dark = ground.luminance() < 0.4;
+    let mut out = raw;
+    for (index, colour) in out.iter_mut().enumerate() {
+        let background = if dark { index == 0 } else { index == 7 || index == 15 };
+        if background {
+            continue;
+        }
+        let min = if index == 8 { 3.0 } else { 4.5 };
+        *colour = legible_on(*colour, &[ground], text, min);
+    }
+    out
+}
 
 const SYNTAX_KEYS: [&str; 10] = [
     "syntaxKeyword",
@@ -393,7 +438,9 @@ fn make(name: &str, p: &Palette) -> Theme {
     let accent = c(p.accent);
     let surface = c(p.surface);
     let surface_active = p.surface_active.map_or(surface, c);
-    let muted = p.text_muted.map_or(text, c);
+    let sidebar = p.sidebar.map_or(bg, c);
+    // Muted text still reads at 4.5:1 on the grounds it is set on.
+    let muted = legible_on(p.text_muted.map_or(text, c), &[bg, sidebar], text, 4.5);
     let editor_bg = p.editor_bg.map_or(bg, c);
     let editor_fg = p.editor_fg.map_or(text, c);
     let selection = p.selection.map_or(surface_active, c);
@@ -403,7 +450,7 @@ fn make(name: &str, p: &Palette) -> Theme {
         colours.insert(k, v);
     };
     put("appBg", bg);
-    put("sidebarBg", p.sidebar.map_or(bg, c));
+    put("sidebarBg", sidebar);
     put("surface", surface);
     put("surfaceActive", surface_active);
     put("text", text);
@@ -436,7 +483,9 @@ fn make(name: &str, p: &Palette) -> Theme {
     for (key, colour) in SYNTAX_KEYS.iter().zip(syntax) {
         put(key, colour);
     }
-    Theme { name: name.to_owned(), colours, builtin: true }
+    let terminal = (colours["terminalBg"], colours["terminalFg"]);
+    let ansi = p.ansi.map(|raw| terminal_ansi(raw.map(c), terminal.0, terminal.1));
+    Theme { name: name.to_owned(), colours, ansi, builtin: true }
 }
 
 /// The hand-written `throng` theme .
@@ -485,14 +534,22 @@ fn throng() -> Theme {
     Theme {
         name: DEFAULT_THEME.to_owned(),
         colours: pairs.iter().map(|(k, v)| (*k, c(v))).collect(),
+        ansi: None,
         builtin: true,
     }
 }
 
-/// The fifteen themes throng ships, `throng` first.
+/// The twenty-eight themes throng ships, `throng` first: its first fifteen, then the ones
+/// converted from community and developer palettes ([`palettes`]).
 #[must_use]
-#[rustfmt::skip]
 pub fn builtins() -> Vec<Theme> {
+    let mut out = first_fifteen();
+    out.extend(palettes::PALETTES.iter().map(|(name, palette)| make(name, palette)));
+    out
+}
+
+#[rustfmt::skip]
+fn first_fifteen() -> Vec<Theme> {
     let mut out = vec![throng()];
     let palettes: [(&str, Palette); 14] = [
         ("Light", Palette {
@@ -531,6 +588,7 @@ pub fn builtins() -> Vec<Theme> {
             terminal_bg: Some("#000000"), terminal_fg: Some("#d7d7d7"), editor_bg: Some("#000000"),
             editor_fg: Some("#d7d7d7"), selection: Some("#264f4a"), unsaved: Some("#e5c07b"),
             syntax: ["#d160c9", "#2ecc71", "#7a7a7a", "#e5c07b", "#2bd4ee", "#5fd7ff", "#d7d7d7", "#b0b0b0", "#9a9a9a", "#ff5f5f"],
+            ..P
         }),
         ("SUBNET", Palette {
             bg: "#001B40", sidebar: Some("#001330"), surface: "#303841", surface_active: Some("#3b4753"),
@@ -539,6 +597,7 @@ pub fn builtins() -> Vec<Theme> {
             terminal_bg: Some("#001B40"), terminal_fg: Some("#d6e6f5"), editor_bg: Some("#001B40"),
             editor_fg: Some("#d6e6f5"), selection: Some("#0a3350"), unsaved: Some("#FFE600"),
             syntax: ["#39FF14", "#FFE600", "#7d92a8", "#FF6F32", "#00EFFF", "#8CFF6B", "#d6e6f5", "#a8c4dc", "#9fb0c2", "#FF3B4E"],
+            ..P
         }),
         ("VSCode", Palette {
             bg: "#1e1e1e", sidebar: Some("#252526"), surface: "#2d2d2d", surface_active: Some("#37373d"),
@@ -577,6 +636,7 @@ pub fn builtins() -> Vec<Theme> {
             terminal_bg: Some("#000000"), terminal_fg: Some("#f3e9ec"), editor_bg: Some("#000000"),
             editor_fg: Some("#f3e9ec"), selection: Some("#3a0212"), unsaved: Some("#f3e600"),
             syntax: ["#ff2e63", "#f3e600", "#a06070", "#ff9f1c", "#55ead4", "#7df9ff", "#f3e9ec", "#d0a8b4", "#b78a93", "#ff3860"],
+            ..P
         }),
         ("Claude", Palette {
             bg: "#1a1613", sidebar: Some("#14100d"), surface: "#262019", surface_active: Some("#332a20"),
@@ -619,11 +679,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fifteen_distinct_builtins_with_every_token() {
+    fn twenty_eight_distinct_builtins_with_every_token() {
         let themes = builtins();
-        assert_eq!(themes.len(), 15);
+        assert_eq!(themes.len(), 28);
         let names: std::collections::HashSet<String> = themes.iter().map(|t| t.name.to_lowercase()).collect();
-        assert_eq!(names.len(), 15);
+        assert_eq!(names.len(), 28);
         for theme in &themes {
             for token in TOKENS {
                 assert!(theme.colours.contains_key(token.key), "{} lacks {}", theme.name, token.key);
@@ -651,6 +711,50 @@ mod tests {
             let (m, cur) = (theme.colour("searchMatch"), theme.colour("searchMatchCurrent"));
             assert!(delta_e(m, bg) <= delta_e(cur, bg) + 0.01, "{}", theme.name);
         }
+    }
+
+    #[test]
+    fn text_reads_on_its_ground_and_terminal_colours_read_on_the_terminal() {
+        let mut failed = Vec::new();
+        for theme in builtins() {
+            for (text, ground) in [
+                ("text", "appBg"),
+                ("text", "sidebarBg"),
+                ("textMuted", "appBg"),
+                ("textMuted", "sidebarBg"),
+                ("editorFg", "editorBg"),
+                ("terminalFg", "terminalBg"),
+            ] {
+                let ratio = contrast(theme.colour(text), theme.colour(ground));
+                if ratio < 4.5 {
+                    failed.push(format!("{} {text} on {ground}: {ratio:.2}", theme.name));
+                }
+            }
+            let Some(ansi) = theme.ansi() else { continue };
+            let ground = theme.colour("terminalBg");
+            let dark = theme.is_dark();
+            for (index, colour) in ansi.iter().enumerate() {
+                let background = if dark { index == 0 } else { index == 7 || index == 15 };
+                let min = if index == 8 { 3.0 } else { 4.5 };
+                let ratio = contrast(*colour, ground);
+                if !background && ratio < min {
+                    failed.push(format!("{} ANSI {index}: {ratio:.2}", theme.name));
+                }
+            }
+        }
+        assert!(failed.is_empty(), "{failed:#?}");
+    }
+
+    #[test]
+    fn a_themes_own_terminal_colours_survive_a_duplicate_and_a_round_trip() {
+        let themes = builtins();
+        let nord = resolve(&themes, "nord", true);
+        let copy = nord.cloned_as("Mine");
+        assert_eq!(copy.ansi(), nord.ansi());
+        let again = Theme::parse(&copy.write_into(None), &themes[0]).unwrap();
+        assert!(again.ansi().is_some() && again.ansi() == nord.ansi());
+        let short = r##"{"name":"Short","ansi":["#000000"]}"##;
+        assert_eq!(Theme::parse(short, &themes[0]).unwrap().ansi(), None, "all sixteen or none");
     }
 
     #[test]

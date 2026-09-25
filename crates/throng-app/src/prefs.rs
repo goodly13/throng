@@ -56,6 +56,7 @@ pub struct PrefsCtx<'a> {
     pub icon_packs: &'a [String],
     pub path: &'a str,
     pub system_dark: bool,
+    pub fonts: &'a mut crate::fonts::SystemFonts,
     pub keymap: &'a mut Arc<Keymap>,
     pub keybindings_path: &'a Path,
 }
@@ -463,12 +464,48 @@ fn capitalise(s: &str) -> String {
     chars.next().map_or_else(String::new, |c| c.to_uppercase().collect::<String>() + chars.as_str())
 }
 
+/// A font setting's picker: the families throng ships, then the installed ones (found only once
+/// the list is first opened). A name the settings file holds that is neither still shows.
+fn font_combo(ui: &mut Ui, key: &str, current: &str, p: &mut PrefsCtx<'_>) -> Option<String> {
+    let code = key == "appearance.codeFont";
+    let bundled = if code { crate::fonts::code_fonts() } else { crate::fonts::interface_fonts() };
+    let mut chosen = current.to_owned();
+    let label = if code { "Terminal and editor font" } else { "Interface font" };
+    let combo = egui::ComboBox::from_id_salt(key).selected_text(current).width(200.0).height(320.0).show_ui(
+        ui,
+        |ui| {
+            for name in &bundled {
+                let on = chosen.eq_ignore_ascii_case(name);
+                if ui.selectable_label(on, *name).on_hover_text("Ships with throng").clicked() {
+                    (*name).clone_into(&mut chosen);
+                }
+            }
+            ui.separator();
+            ui.weak("Installed");
+            for name in p.fonts.families(code) {
+                if bundled.iter().any(|b| b.eq_ignore_ascii_case(&name)) {
+                    continue;
+                }
+                if ui.selectable_label(chosen.eq_ignore_ascii_case(&name), &name).clicked() {
+                    chosen = name;
+                }
+            }
+        },
+    );
+    combo.response.widget_info(|| {
+        let mut info = egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, label);
+        info.current_text_value = Some(current.to_owned());
+        info
+    });
+    (chosen != current).then_some(chosen)
+}
+
 fn control(
     ui: &mut Ui,
     key: &str,
     kind: SettingKind,
     value: Option<SettingValue>,
-    p: &PrefsCtx<'_>,
+    p: &mut PrefsCtx<'_>,
 ) -> Option<SettingValue> {
     match (kind, value) {
         (SettingKind::Bool { .. }, Some(SettingValue::Bool(mut b))) => {
@@ -486,12 +523,17 @@ fn control(
             .then_some(SettingValue::Float(f)),
         (SettingKind::Choice { options, .. }, Some(SettingValue::Text(current))) => {
             let mut chosen = current.clone();
-            egui::ComboBox::from_id_salt(key).selected_text(&current).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt(key).selected_text(capitalise(&current)).show_ui(ui, |ui| {
                 for option in options {
-                    ui.selectable_value(&mut chosen, (*option).to_owned(), *option);
+                    ui.selectable_value(&mut chosen, (*option).to_owned(), capitalise(option));
                 }
             });
             (chosen != current).then_some(SettingValue::Text(chosen))
+        }
+        (SettingKind::Text { .. }, Some(SettingValue::Text(current)))
+            if key == "appearance.interfaceFont" || key == "appearance.codeFont" =>
+        {
+            font_combo(ui, key, &current, p).map(SettingValue::Text)
         }
         (SettingKind::Text { .. }, Some(SettingValue::Text(current))) if key == "appearance.theme" => {
             theme_combo(ui, key, &current, p.themes).map(SettingValue::Text)
