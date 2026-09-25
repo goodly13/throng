@@ -137,6 +137,10 @@ missing. [Open work](#open-work) collects every gap in one list.
   - A program that pushes disambiguation gets these as `CSI code;mods u`: Escape, and Enter, Tab,
     Backspace, Space, letters and digits with Ctrl, Alt or Shift. Shift+Enter differs from Enter.
   - A program that asks for every key gets plain keys that way too.
+  - A program that also asks for associated text gets the text a key typed as the third field,
+    in code points (`CSI 32;;32u` for Space, `CSI 97;2;65u` for Shift+A): Textual, and so
+    OpenHands CLI, reads a key's character only from there. A chord types no text, and a key
+    without text never takes the text of the key after it.
   - Arrows and function keys keep their CSI forms.
 
   Colour queries (OSC 10, 11, 12 and 4) are answered with the colour the program set, else
