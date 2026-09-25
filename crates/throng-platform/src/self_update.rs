@@ -249,6 +249,8 @@ fn make_executable(_path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    // Only the AppImage (Unix) and app bundle (macOS) tests install a version.
+    #[cfg(unix)]
     fn v(text: &str) -> Version {
         Version::parse(text).unwrap()
     }
