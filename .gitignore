@@ -7,3 +7,6 @@ Thumbs.db
 .vscode/
 .claude/settings.local.json
 .claude/worktrees/
+
+# Local tooling artifacts (session status, agent/browser tooling, profiler output)
+.claude/STATUS.md
