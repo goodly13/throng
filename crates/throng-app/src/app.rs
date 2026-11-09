@@ -71,7 +71,6 @@ const UPDATE_SKIPPED_KEY: &str = "update.skipped";
 pub type FolderPicker = Box<dyn FnMut(Option<&Path>) -> Option<PathBuf>>;
 
 /// The platform's own folder picker.
-#[must_use]
 pub fn native_folder_picker() -> FolderPicker {
     Box::new(|start| {
         let dialog = rfd::FileDialog::new().set_title("Choose the project's root folder");
@@ -1350,7 +1349,7 @@ impl ThrongApp {
                 HubEvent::Captured(panel) => {
                     self.update_terminal(panel, TerminalPanelConfig::capture);
                 }
-                HubEvent::Failed { .. } | HubEvent::TitleChanged(_) => {}
+                HubEvent::Failed { .. } | HubEvent::TitleChanged(_) | HubEvent::Bell(_) => {}
             }
         }
     }
