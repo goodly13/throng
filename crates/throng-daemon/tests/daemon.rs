@@ -224,11 +224,31 @@ fn spawn_streams_output_and_reports_the_exit_code() {
     // A daemon with no PTY host to hand (as here) gives every terminal its own rights, and only an
     // elevated Windows daemon's are marked.
     assert_eq!(first.elevated, cfg!(windows) && throng_platform::process::is_elevated());
+    // The shell's pid comes with the snapshot, so what it runs can be read before the first listing.
+    assert!(first.pid.is_some(), "the snapshot names the shell");
     let mut view = View::new(&first);
     view.pump(&client, |v| v.exited.is_some());
     assert!(view.contains(if cfg!(windows) { "hello from cmd" } else { "hello from /bin/sh" }));
     assert!(view.contains("secret=none"), "THRONG_* variables must not reach the shell");
     assert_eq!(view.exited, Some(ExitStatus { code: Some(3), user_killed: false }));
+}
+
+#[test]
+fn a_shell_learns_its_terminal_and_project() {
+    let h = Harness::start();
+    let client = h.client();
+    let spec = script(
+        &h.cwd(),
+        "echo T=$THRONG_TERMINAL P=$THRONG_PROJECT H=$THRONG_HOME",
+        "echo T=%THRONG_TERMINAL% P=%THRONG_PROJECT% H=%THRONG_HOME%",
+    );
+    let (terminal, project) = (spec.terminal, spec.project);
+    let mut view = View::new(&snapshot(client.request(Request::Spawn(spec), WAIT)));
+    view.pump(&client, |v| v.exited.is_some());
+    // How `throng focus` and `throng notify` name the terminal they are typed in, and find the
+    // instance it belongs to (FR-056).
+    let home = h.dirs.home.as_ref().unwrap().display();
+    assert!(view.contains(&format!("T={terminal} P={project} H={home}")), "{}", plain(&view.text));
 }
 
 #[test]
@@ -442,6 +462,28 @@ fn the_pty_takes_the_smallest_attached_view() {
     a.write(terminal, ask);
     view.pump(&a, |v| v.squeezed().matches(&size(30, 100)).count() >= 2);
     assert!(!view.squeezed().contains(&size(5, 10)));
+    a.request(Request::Kill { terminal }, WAIT).unwrap();
+}
+
+#[test]
+fn an_observer_attach_has_no_say_in_the_size() {
+    let h = Harness::start();
+    let a = h.client();
+    let b = h.client();
+    let mut spec = interactive(&h.cwd());
+    spec.cols = 100;
+    spec.rows = 30;
+    let terminal = spec.terminal;
+    let (ask, size) = (SIZE_QUERY, size_report);
+    let mut view = View::new(&snapshot(a.request(Request::Spawn(spec), WAIT)));
+    // A view that is not on screen attaches with no size, and the PTY stays as it was.
+    snapshot(b.request(Request::Attach { terminal, cols: 0, rows: 0 }, WAIT));
+    a.write(terminal, ask);
+    view.pump(&a, |v| v.squeezed().contains(&size(30, 100)));
+    // Once it is shown, its resize gives it a say like any other view.
+    b.post(Request::Resize { terminal, cols: 50, rows: 20 });
+    a.write(terminal, ask);
+    view.pump(&a, |v| v.squeezed().contains(&size(20, 50)));
     a.request(Request::Kill { terminal }, WAIT).unwrap();
 }
 

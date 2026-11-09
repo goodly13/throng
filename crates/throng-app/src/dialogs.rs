@@ -58,6 +58,7 @@ pub enum Dialog {
     },
     /// Quick Open.
     QuickOpen(crate::quick_open::QuickOpen),
+    Palette(crate::palette::Palette),
     /// Replacing in files that are not open writes them straight to disk.
     ConfirmReplace {
         panel: PanelId,
@@ -139,6 +140,7 @@ pub enum Answer {
     /// Use this language, or `None` to detect it from the file name.
     Language(Option<String>),
     QuickOpen(crate::quick_open::Choice),
+    Palette(crate::palette::ItemId),
     ConfirmReplace,
 }
 
@@ -275,6 +277,10 @@ pub fn show(ctx: &Context, dialog: &mut Dialog) -> Answer {
             Dialog::Language { filter, current, overridden, .. } => language_picker(ui, filter, current, *overridden),
             Dialog::QuickOpen(state) => match crate::quick_open::show(ui, state) {
                 Some(choice) => Answer::QuickOpen(choice),
+                None => Answer::None,
+            },
+            Dialog::Palette(state) => match crate::palette::show(ui, state) {
+                Some(id) => Answer::Palette(id),
                 None => Answer::None,
             },
             Dialog::ConfirmReplace { files, matches, .. } => {

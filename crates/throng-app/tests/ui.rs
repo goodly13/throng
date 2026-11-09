@@ -103,21 +103,35 @@ impl Env {
             .build_eframe(|cc| ThrongApp::new(&cc.egui_ctx, services).expect("app starts"))
     }
 
-    /// Seed a project with a layout built by `build`.
+    /// Seed the active project, "Seeded", with a layout built by `build`.
     fn seed(&self, root: &Path, build: impl FnOnce(ProjectId, &mut Layout)) -> ProjectId {
+        self.seed_project(root, "Seeded", 0, true, build)
+    }
+
+    /// Seed a project at `position` in the sidebar; `active` makes it the one shown at start.
+    fn seed_project(
+        &self,
+        root: &Path,
+        name: &str,
+        position: usize,
+        active: bool,
+        build: impl FnOnce(ProjectId, &mut Layout),
+    ) -> ProjectId {
         self.dirs.ensure().unwrap();
         let store = Store::open(&self.dirs.database()).unwrap();
         let mut book = ProjectBook::default();
         let project = book
             .create(
                 &PathRules::LINUX,
-                &ProjectInput { name: "Seeded".into(), colour: "#6aa3ff".into(), root: root.to_path_buf() },
+                &ProjectInput { name: name.into(), colour: "#6aa3ff".into(), root: root.to_path_buf() },
                 0,
             )
             .unwrap()
             .clone();
-        store.upsert_project(&project, 0).unwrap();
-        store.set_state(ACTIVE_PROJECT_KEY, Some(&project.id.to_string())).unwrap();
+        store.upsert_project(&project, position).unwrap();
+        if active {
+            store.set_state(ACTIVE_PROJECT_KEY, Some(&project.id.to_string())).unwrap();
+        }
         let mut layout = Layout::new_default(project.id);
         build(project.id, &mut layout);
         store.save_layout(project.id, &layout, 0).unwrap();
@@ -1678,8 +1692,8 @@ fn an_elevated_throng_keeps_administrator_rights_only_for_a_terminal_that_asks()
         !text_of(harness.state(), normal).contains(HIGH),
         "the unticked terminal has no administrator rights"
     );
-    steps(&mut harness, 2);
-    harness.get_by_label("Panel 1");
+    // Idle again (the daemon lists that within its next look), the tabs read their own names.
+    wait_for_label(&mut harness, "Panel 1");
     harness.get_by_label("Panel 2 ADMIN");
     // And throng itself says it runs as administrator.
     harness.get_by_label("ADMIN");
@@ -2112,4 +2126,522 @@ fn a_failed_install_says_why_and_keeps_download() {
     harness.get_by_label("Install and Restart");
     assert!(!harness.state().close_confirmed(), "a failed install does not quit");
     assert_eq!(installer.relaunches.load(Ordering::SeqCst), 0);
+}
+
+/// Two projects, "Alpha" (active) and "Beta", each with one terminal panel: their ids and Beta's panel.
+#[cfg(unix)]
+fn alpha_and_beta(env: &Env, beta: TerminalPanelConfig) -> (ProjectId, ProjectId, PanelId) {
+    let (a_root, b_root) = (env.folder("alpha"), env.folder("beta"));
+    let a = env.seed_project(&a_root, "Alpha", 0, true, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(TerminalPanelConfig::default()));
+    });
+    let mut b_panel = None;
+    let b = env.seed_project(&b_root, "Beta", 1, false, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(beta));
+        b_panel = Some(first);
+    });
+    (a, b, b_panel.unwrap())
+}
+
+/// Step frames until a widget labelled `label` exists.
+fn wait_for_label(harness: &mut Harness<'static, ThrongApp>, label: &str) {
+    let deadline = Instant::now() + WAIT;
+    while harness.query_by_label(label).is_none() {
+        assert!(Instant::now() < deadline, "no widget labelled {label}");
+        harness.step();
+        std::thread::sleep(Duration::from_millis(15));
+    }
+}
+
+/// Click a project's row in the sidebar (a button; the status bar names the project with a label).
+#[cfg(unix)]
+fn click_project(harness: &Harness<'static, ThrongApp>, name: &str) {
+    harness.get_by_role_and_label(egui::accesskit::Role::Button, name).click();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_bell_in_another_project_shows_in_the_sidebar_and_the_chord_goes_to_it() {
+    let env = Env::new();
+    let (a, b, b_panel) = alpha_and_beta(&env, TerminalPanelConfig::default());
+    let mut harness = env.app(None);
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().active_project_id(), Some(a));
+    // Beta's terminal starts when Beta is first shown.
+    click_project(&harness, "Beta");
+    wait(&mut harness, "Beta's shell", |app| {
+        app.terminal_status(b_panel) == Some(Status::Running) && !text_of(app, b_panel).trim().is_empty()
+    });
+    let label = "Terminal: Beta \u{203a} Tab 1 \u{203a} Panel 1";
+    harness.get_by_label(label).click();
+    steps(&mut harness, 2);
+    harness.get_by_label(label).type_text("sleep 2; printf '\\a'");
+    harness.key_press(Key::Enter);
+    click_project(&harness, "Alpha");
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().active_project_id(), Some(a));
+    wait(&mut harness, "Beta's bell", |app| app.project_activity(b).attention == 1);
+    steps(&mut harness, 2);
+    harness.get_by_label("1 needs attention");
+    // The chord goes to what needs you: Beta's terminal, whose focus clears it.
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::A);
+    wait(&mut harness, "the switch to Beta", |app| {
+        app.active_project_id() == Some(b) && app.project_activity(b).attention == 0
+    });
+    steps(&mut harness, 2);
+    assert!(harness.query_by_label("1 needs attention").is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_terminals_title_names_its_tab_until_the_panel_is_renamed() {
+    let env = Env::new();
+    let root = env.folder("titles");
+    let mut named = None;
+    env.seed(&root, |project, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(TerminalPanelConfig::default()));
+        let second = layout.add_panel(
+            project,
+            Some(first),
+            Placement::Right,
+            terminal(TerminalPanelConfig::default()),
+        );
+        layout.rename_panel(second, "Mine");
+        named = Some(second);
+    });
+    let named = named.unwrap();
+    let mut harness = env.app(None);
+    let first = first_panel(harness.state());
+    wait(&mut harness, "both shells", |app| {
+        app.terminal_status(first) == Some(Status::Running)
+            && app.terminal_status(named) == Some(Status::Running)
+    });
+    let type_title = |harness: &mut Harness<'static, ThrongApp>, label: &str, title: &str| {
+        harness.get_by_label(label).click();
+        steps(harness, 2);
+        // A program sets the title once the daemon has listed it as running, and stays: that is
+        // whose title a tab reads.
+        harness
+            .get_by_label(label)
+            .type_text(&format!("sh -c \"sleep 3; printf '\\\\033]0;{title}\\\\007'; sleep 30\""));
+        harness.key_press(Key::Enter);
+    };
+    type_title(&mut harness, "Terminal: Seeded \u{203a} Tab 1 \u{203a} Panel 1", "agent-done");
+    wait_for_label(&mut harness, "agent-done");
+    // A renamed panel keeps its name, whatever its program says.
+    type_title(&mut harness, "Terminal: Seeded \u{203a} Tab 1 \u{203a} Mine", "other-title");
+    wait(&mut harness, "its program's title", |app| {
+        app.terminal_title(named).as_deref() == Some("other-title")
+    });
+    steps(&mut harness, 2);
+    harness.get_by_label("Mine");
+    assert!(harness.query_by_label("other-title").is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_running_terminal_in_another_project_is_watched_from_launch() {
+    let env = Env::new();
+    // Beta runs a program that rings every second: whenever the second launch attaches, a ring
+    // follows, and the terminal is busy throughout.
+    let (a, b, b_panel) = alpha_and_beta(&env, startup("sh -c 'while :; do printf \\\\a; sleep 1; done'"));
+    let mut first = env.app(None);
+    steps(&mut first, 3);
+    click_project(&first, "Beta");
+    // Its program is up once the daemon lists the terminal as busy.
+    wait(&mut first, "Beta's program", |app| app.project_activity(b).busy == 1);
+    click_project(&first, "Alpha");
+    steps(&mut first, 2);
+    first.state_mut().request_close();
+    steps(&mut first, 3);
+    first.get_by_label("Leave Running").click();
+    steps(&mut first, 3);
+    assert!(first.state().close_confirmed());
+    drop(first);
+
+    let mut second = env.app(None);
+    steps(&mut second, 3);
+    assert_eq!(second.state().active_project_id(), Some(a), "Beta is never shown");
+    wait(&mut second, "Beta's terminal to be watched", |app| {
+        app.terminal_status(b_panel) == Some(Status::Running)
+            && app.project_activity(b) == throng_app::app::Activity { attention: 1, busy: 1 }
+    });
+    steps(&mut second, 2);
+    second.get_by_label("1 needs attention");
+}
+
+/// Send a remote command while the app keeps drawing; its answer.
+fn remote(
+    harness: &mut Harness<'static, ThrongApp>,
+    dirs: &AppDirs,
+    command: throng_app::remote::Command,
+) -> throng_app::remote::Reply {
+    let dirs = dirs.clone();
+    let worker = std::thread::spawn(move || throng_app::remote::send(&dirs, &command, WAIT));
+    while !worker.is_finished() {
+        harness.step();
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    worker.join().unwrap().expect("throng answers")
+}
+
+#[test]
+fn remote_commands_open_files_focus_terminals_and_raise_notices() {
+    use throng_app::remote::{Command, Reply};
+    let env = Env::new();
+    let root = env.folder("remote");
+    let file = root.join("src").join("a.rs");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(TerminalPanelConfig::default()));
+    });
+    let mut harness = env.app(None);
+    let panel = first_panel(harness.state());
+    wait(&mut harness, "the shell", |app| app.terminal_status(panel) == Some(Status::Running));
+
+    // A file opens in the project that holds it, at the position asked for.
+    let open = Command::Open { path: file.clone(), line: Some(2), column: Some(1) };
+    assert_eq!(remote(&mut harness, &env.dirs, open), Reply::Ok);
+    steps(&mut harness, 3);
+    harness.get_by_label("line 2");
+
+    // Status lists the project and its terminal.
+    let Reply::Status(projects) = remote(&mut harness, &env.dirs, Command::Status) else {
+        panic!("no status")
+    };
+    assert_eq!(projects.len(), 1);
+    assert!(projects[0].active);
+    assert_eq!(projects[0].name, "Seeded");
+    let listed =
+        projects[0].terminals.iter().find(|t| t.terminal == panel.into()).expect("the terminal is listed");
+    assert_eq!(listed.label, "Seeded › Tab 1 › Panel 1");
+
+    // A notice points back at the terminal, which then needs attention.
+    let notify = Command::Notify { message: "tests passed".into(), terminal: Some(panel.into()) };
+    assert_eq!(remote(&mut harness, &env.dirs, notify), Reply::Ok);
+    steps(&mut harness, 2);
+    let notices: Vec<_> =
+        harness.state().notices().iter().filter(|n| n.message.contains("tests passed")).cloned().collect();
+    assert_eq!(notices.len(), 1, "{:?}", harness.state().notices());
+    assert!(notices[0].actions.iter().any(|a| a.label == "Show"), "{notices:?}");
+    assert_eq!(harness.state().project_activity(projects[0].id).attention, 1);
+
+    // A path no project holds is refused in words, and raises nothing.
+    let outside = env.folder("elsewhere").join("x.txt");
+    std::fs::write(&outside, "x").unwrap();
+    let before = harness.state().notices().len();
+    let reply = remote(&mut harness, &env.dirs, Command::Open { path: outside, line: None, column: None });
+    assert!(matches!(reply, Reply::Error(ref m) if m.contains("No project")), "{reply:?}");
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().notices().len(), before);
+
+    // Focus brings the terminal's panel back to the front.
+    assert_eq!(remote(&mut harness, &env.dirs, Command::Focus { terminal: Some(panel.into()) }), Reply::Ok);
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().focused_panel(), Some(panel));
+    assert_eq!(harness.state().project_activity(projects[0].id).attention, 0, "seen, with the keyboard");
+}
+
+/// Run the `throng` command line against this test's instance while the app keeps drawing.
+fn cli(
+    harness: &mut Harness<'static, ThrongApp>,
+    env: &Env,
+    cwd: &Path,
+    args: &[&str],
+    vars: &[(&str, &str)],
+) -> std::process::Output {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_throng"));
+    command
+        .args(args)
+        .current_dir(cwd)
+        .env("THRONG_HOME", env.dirs.home.as_ref().unwrap())
+        .env_remove("THRONG_TERMINAL")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    for (name, value) in vars {
+        command.env(name, value);
+    }
+    let mut child = command.spawn().unwrap();
+    let deadline = Instant::now() + WAIT;
+    while child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "the command line hung");
+        harness.step();
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn the_command_line_reaches_the_running_throng() {
+    let env = Env::new();
+    let root = env.folder("cli");
+    let file = root.join("src").join("a.rs");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(TerminalPanelConfig::default()));
+    });
+    // A running throng holds the instance's UI lock; this test stands in for it.
+    let lock =
+        std::fs::File::options().create(true).truncate(false).write(true).open(env.dirs.ui_lock()).unwrap();
+    lock.try_lock().unwrap();
+    let mut harness = env.app(None);
+    let panel = first_panel(harness.state());
+    wait(&mut harness, "the shell", |app| app.terminal_status(panel) == Some(Status::Running));
+    let stderr = |out: &std::process::Output| String::from_utf8_lossy(&out.stderr).into_owned();
+
+    // A relative path is resolved against the caller's folder, and opens at its line.
+    let out = cli(&mut harness, &env, &root, &["open", "src/a.rs:3"], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    steps(&mut harness, 3);
+    harness.get_by_label("line 3");
+
+    // Status prints every project and terminal as JSON.
+    let out = cli(&mut harness, &env, &root, &["status"], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let projects: Vec<throng_app::remote::ProjectStatus> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(projects[0].name, "Seeded");
+    assert_eq!(projects[0].terminals[0].terminal, panel.into());
+
+    // notify names the terminal it was typed in, through the shell's THRONG_TERMINAL.
+    let id = panel.to_string();
+    let out = cli(&mut harness, &env, &root, &["notify", "tests", "passed"], &[("THRONG_TERMINAL", &id)]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    steps(&mut harness, 2);
+    let notice = harness.state().notices().iter().find(|n| n.message.contains("tests passed")).cloned();
+    assert!(notice.is_some_and(|n| n.message.contains("Panel 1")), "{:?}", harness.state().notices());
+
+    // A second launch with a folder hands it to the running throng instead of refusing to start.
+    let other = env.folder("other");
+    let out = cli(&mut harness, &env, &root, &[other.to_str().unwrap()], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    steps(&mut harness, 3);
+    let opened = harness.state().projects().iter().find(|p| p.root == other).map(|p| p.id);
+    assert!(opened.is_some(), "the folder became a project");
+    assert_eq!(harness.state().active_project_id(), opened);
+
+    // Wrong arguments and refusals exit non-zero, in words.
+    let out = cli(&mut harness, &env, &root, &["open"], &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let outside = env.folder("elsewhere").join("x.txt");
+    std::fs::write(&outside, "x").unwrap();
+    let out = cli(&mut harness, &env, &root, &["open", outside.to_str().unwrap()], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("No project"), "{}", stderr(&out));
+}
+
+#[test]
+fn chords_move_between_panels_projects_and_the_projects_list() {
+    let env = Env::new();
+    let (a_root, b_root) = (env.folder("alpha"), env.folder("beta"));
+    let (left_file, right_file) = (a_root.join("a.txt"), a_root.join("b.txt"));
+    std::fs::write(&left_file, "left\n").unwrap();
+    std::fs::write(&right_file, "right\n").unwrap();
+    let mut right = None;
+    let a = env.seed_project(&a_root, "Alpha", 0, true, |project, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, PanelKind::Editor(EditorPanelConfig { path: Some(left_file.clone()) }));
+        let editor = PanelKind::Editor(EditorPanelConfig { path: Some(right_file.clone()) });
+        right = Some(layout.add_panel(project, Some(first), Placement::Right, editor));
+    });
+    let b = env.seed_project(&b_root, "Beta", 1, false, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, PanelKind::Untyped);
+    });
+    let right = right.unwrap();
+    let mut harness = env.app(None);
+    steps(&mut harness, 3);
+    let left = first_panel(harness.state());
+    // The keyboard moves between panels by direction (the panel added last is the active one).
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::ArrowLeft);
+    wait(&mut harness, "the left editor to take the keyboard", |app| app.focused_panel() == Some(left));
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::ArrowRight);
+    wait(&mut harness, "the right editor to take the keyboard", |app| app.focused_panel() == Some(right));
+    // Between projects, in the sidebar's order, wrapping around.
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::PageDown);
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().active_project_id(), Some(b));
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::PageDown);
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().active_project_id(), Some(a), "wrapped around");
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::PageUp);
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().active_project_id(), Some(b));
+    // The projects list can be put away and brought back.
+    assert!(harness.state().projects_shown());
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::P);
+    steps(&mut harness, 2);
+    assert!(!harness.state().projects_shown());
+    assert!(harness.query_by_role_and_label(egui::accesskit::Role::Button, "Alpha").is_none());
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::P);
+    steps(&mut harness, 2);
+    harness.get_by_role_and_label(egui::accesskit::Role::Button, "Alpha");
+}
+
+#[test]
+fn the_command_palette_switches_projects_and_runs_commands() {
+    let env = Env::new();
+    let (a_root, b_root) = (env.folder("alpha"), env.folder("beta"));
+    env.seed_project(&a_root, "Alpha", 0, true, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, PanelKind::Untyped);
+    });
+    let b = env.seed_project(&b_root, "Beta", 1, false, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, PanelKind::Untyped);
+    });
+    let mut harness = env.app(None);
+    steps(&mut harness, 3);
+    let palette = |harness: &mut Harness<'static, ThrongApp>, text: &str| {
+        harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::P);
+        settle(harness, 300);
+        harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "Command Palette").type_text(text);
+        steps(harness, 2);
+    };
+    // A project, by name.
+    palette(&mut harness, "beta");
+    harness.key_press(Key::Enter);
+    steps(&mut harness, 4);
+    assert_eq!(harness.state().active_project_id(), Some(b));
+    // A command, by name: run as if its chord were pressed.
+    assert!(harness.state().explorer_shown());
+    palette(&mut harness, "toggle file explorer");
+    harness.key_press(Key::Enter);
+    steps(&mut harness, 4);
+    assert!(!harness.state().explorer_shown());
+    // Only commands live where the keyboard is are offered: no editor has it, so none of its.
+    palette(&mut harness, "find and replace");
+    harness.get_by_label("Nothing matches.");
+    harness.key_press(Key::Escape);
+    steps(&mut harness, 2);
+    assert!(harness.query_by_role_and_label(egui::accesskit::Role::TextInput, "Command Palette").is_none());
+}
+
+#[test]
+fn the_command_palette_runs_a_command_of_the_focused_editor() {
+    let env = Env::new();
+    let (file, mut harness, _panel) = editor_on(&env, "a.txt", "one\n");
+    harness.get_by_role(egui::accesskit::Role::MultilineTextInput).type_text("x");
+    steps(&mut harness, 2);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\n", "not saved yet");
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::P);
+    settle(&mut harness, 300);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::TextInput, "Command Palette")
+        .type_text("editor: save");
+    steps(&mut harness, 2);
+    harness.key_press(Key::Enter);
+    // The command reaches the editor that had the keyboard before the palette opened.
+    wait(&mut harness, "the file to be saved", |_| std::fs::read_to_string(&file).unwrap() == "xone\n");
+}
+
+#[test]
+fn a_terminal_moved_to_a_sub_workspace_still_needs_you() {
+    use throng_app::remote::{Command, Reply};
+    let env = Env::new();
+    let root = env.folder("subattention");
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(TerminalPanelConfig::default()));
+    });
+    let mut harness = env.app(None);
+    let panel = first_panel(harness.state());
+    wait(&mut harness, "the shell", |app| app.terminal_status(panel) == Some(Status::Running));
+    harness.get_by_label("Panel 1").click_secondary();
+    steps(&mut harness, 3);
+    harness.get_by_label_contains("Move to Sub-workspace").click();
+    steps(&mut harness, 3);
+    harness.get_by_label("New Sub-workspace").click();
+    steps(&mut harness, 4);
+    assert!(harness.state().active_layout().unwrap().is_away(panel));
+    let project = harness.state().active_project_id().unwrap();
+
+    // A notice from the command line marks it; the badge, the status and the chord all see it.
+    let notify = Command::Notify { message: "done".into(), terminal: Some(panel.into()) };
+    assert_eq!(remote(&mut harness, &env.dirs, notify), Reply::Ok);
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().project_activity(project).attention, 1);
+    let Reply::Status(projects) = remote(&mut harness, &env.dirs, Command::Status) else {
+        panic!("no status")
+    };
+    let listed = projects[0]
+        .terminals
+        .iter()
+        .find(|t| t.terminal == panel.into())
+        .expect("an away terminal is listed");
+    assert!(listed.attention);
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::A);
+    // Its mirror in the sub-workspace window takes the keyboard, which is what clears the call.
+    wait(&mut harness, "the terminal to take the keyboard in its sub-workspace", |app| {
+        app.project_activity(project).attention == 0
+    });
+    assert_eq!(harness.state().sub_workspaces().iter().filter(|(_, open)| *open).count(), 1);
+}
+
+/// Ubuntu's bash sets a title at every prompt, before the daemon has listed the shell.
+#[cfg(unix)]
+#[test]
+fn a_shells_own_title_never_names_the_tab() {
+    let env = Env::new();
+    let root = env.folder("shelltitle");
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(TerminalPanelConfig::default()));
+    });
+    let mut harness = env.app(None);
+    let panel = first_panel(harness.state());
+    wait(&mut harness, "the shell", |app| app.terminal_status(panel) == Some(Status::Running));
+    let label = "Terminal: Seeded › Tab 1 › Panel 1";
+    harness.get_by_label(label).click();
+    steps(&mut harness, 2);
+    // The shell's own title, set at its prompt (a shell that titles every prompt sets its own again
+    // at once), then a command that sets none.
+    harness.get_by_label(label).type_text("printf '\\033]0;me@host: ~\\007'");
+    harness.key_press(Key::Enter);
+    wait(&mut harness, "a title to arrive", |app| app.terminal_title(panel).is_some());
+    harness.get_by_label(label).type_text("sleep 300");
+    harness.key_press(Key::Enter);
+    wait(&mut harness, "the command to be seen", |app| {
+        app.project_activity(app.active_project_id().unwrap()).busy == 1
+    });
+    steps(&mut harness, 2);
+    harness.get_by_label("Panel 1");
+}
+
+/// A shell that titles every prompt (Ubuntu's bash does), with the next command typed before the
+/// prompt is drawn: the title and the command's start arrive together.
+#[cfg(unix)]
+#[test]
+fn a_prompts_title_with_a_command_typed_ahead_never_names_the_tab() {
+    let env = Env::new();
+    let root = env.folder("typeahead");
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(TerminalPanelConfig::default()));
+    });
+    let mut harness = env.app(None);
+    let panel = first_panel(harness.state());
+    wait(&mut harness, "the shell's prompt", |app| {
+        app.terminal_status(panel) == Some(Status::Running) && !text_of(app, panel).trim().is_empty()
+    });
+    let label = "Terminal: Seeded › Tab 1 › Panel 1";
+    harness.get_by_label(label).click();
+    steps(&mut harness, 2);
+    // Both lines go in one burst: the new prompt sets its title, and the command starts at once.
+    harness.get_by_label(label).type_text("PS1=\"$(printf '\\033]0;me@host: ~\\007')$ \"");
+    harness.key_press(Key::Enter);
+    harness.get_by_label(label).type_text("sleep 300");
+    harness.key_press(Key::Enter);
+    wait(&mut harness, "the prompt's title and the command", |app| {
+        app.terminal_title(panel).as_deref() == Some("me@host: ~")
+            && app.project_activity(app.active_project_id().unwrap()).busy == 1
+    });
+    steps(&mut harness, 2);
+    harness.get_by_label("Panel 1");
 }

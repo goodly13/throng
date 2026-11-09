@@ -3,29 +3,41 @@
 // A release build on Windows is a windowed program: launching it opens no console window.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
+use throng_app::remote::{self, Command, Reply};
 use throng_app::{Services, ThrongApp, logging};
+use throng_core::ids::TerminalId;
 use throng_platform::dirs::AppDirs;
 
 const USAGE: &str = "\
 throng — project-first terminal & agent workspace
 
 USAGE:
-    throng [FOLDER]      Open throng (and the project for FOLDER, creating it if needed)
-    throng daemon        Run the terminal daemon (started automatically; not needed by hand)
-    throng pty-host      Host one terminal for the daemon, over standard input and output
-                         (started by an elevated daemon; not needed by hand)
-    throng --version     Print the version
+    throng [FOLDER]        Open throng, and the project for FOLDER (created if needed).
+                           While throng is open, the folder is handed to it instead.
+    throng open PATH       Open a file in the open throng, in the project that holds it;
+                           PATH may end in :LINE or :LINE:COL. A folder opens its project.
+    throng focus           Bring the terminal this is typed in to the front
+    throng notify WORDS..  Leave a notice in throng that points back to this terminal
+    throng status          Print every project and terminal as JSON
+    throng daemon          Run the terminal daemon (started automatically; not needed by hand)
+    throng pty-host        Host one terminal for the daemon, over standard input and output
+                           (started by an elevated daemon; not needed by hand)
+    throng --version       Print the version
 ";
+
+/// How long the command line waits for the open throng to answer.
+const REMOTE_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("daemon") => run_daemon(),
         Some("pty-host") => ExitCode::from(u8::try_from(throng_daemon::pty_host::run()).unwrap_or(1)),
+        Some("open" | "focus" | "notify" | "status") => run_remote(&args),
         Some("--version" | "-V") => {
             println!("throng {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -54,6 +66,50 @@ fn icon() -> egui::IconData {
         Err(e) => {
             tracing::warn!(error = %e, "the window icon could not be read");
             egui::IconData::default()
+        }
+    }
+}
+
+/// `path` as the open throng must read it: absolute, against this process's folder.
+fn absolute(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
+    }
+}
+
+/// `throng open|focus|notify|status`: one command to the open throng (FR-056). The terminal this
+/// is typed in is named by `THRONG_TERMINAL`, which every throng shell carries.
+fn run_remote(args: &[String]) -> ExitCode {
+    let dirs = match dirs() {
+        Ok(dirs) => dirs,
+        Err(code) => return code,
+    };
+    let terminal = std::env::var("THRONG_TERMINAL").ok().and_then(|s| s.parse::<TerminalId>().ok());
+    let command = match (args[0].as_str(), &args[1..]) {
+        ("open", [path]) => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let (path, line, column) = remote::target(path, &cwd);
+            Command::Open { path, line, column }
+        }
+        ("focus", []) => Command::Focus { terminal },
+        ("notify", words) if !words.is_empty() => Command::Notify { message: words.join(" "), terminal },
+        ("status", []) => Command::Status,
+        (what, _) => {
+            eprintln!("throng: wrong arguments for `{what}`\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    match remote::send(&dirs, &command, REMOTE_TIMEOUT) {
+        Ok(Reply::Ok) => ExitCode::SUCCESS,
+        Ok(Reply::Status(projects)) => {
+            println!("{}", serde_json::to_string_pretty(&projects).unwrap_or_default());
+            ExitCode::SUCCESS
+        }
+        Ok(Reply::Error(message)) | Err(message) => {
+            eprintln!("throng: {message}");
+            ExitCode::FAILURE
         }
     }
 }
@@ -100,8 +156,22 @@ fn run_ui(folder: Option<PathBuf>) -> ExitCode {
         Ok(file) => match file.try_lock() {
             Ok(()) => file,
             Err(_) => {
-                eprintln!("throng is already running.");
-                return ExitCode::SUCCESS;
+                // Another throng has this instance: hand it the folder, or bring it forward.
+                let command = match &folder {
+                    Some(folder) => Command::Open { path: absolute(folder), line: None, column: None },
+                    None => Command::Focus { terminal: None },
+                };
+                return match remote::send(&dirs, &command, REMOTE_TIMEOUT) {
+                    Ok(Reply::Ok | Reply::Status(_)) => ExitCode::SUCCESS,
+                    Ok(Reply::Error(message)) => {
+                        eprintln!("throng: {message}");
+                        ExitCode::FAILURE
+                    }
+                    Err(_) => {
+                        eprintln!("throng is already running, but its window could not be reached.");
+                        ExitCode::FAILURE
+                    }
+                };
             }
         },
         Err(e) => {

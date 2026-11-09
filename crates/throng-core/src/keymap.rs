@@ -170,19 +170,30 @@ pub const COMMANDS: &[Command] = &[
     cmd("preview.followLink", "Navigate", "Open Link", LINKS, &["Ctrl+Enter"]),
     cmd("navigate.back", "Navigate", "Back", PREVIEW, &["Alt+ArrowLeft"]),
     cmd("navigate.forward", "Navigate", "Forward", PREVIEW, &["Alt+ArrowRight"]),
+    cmd("focus.attention", "Navigate", "Go to what needs you", EVERYWHERE, &["Ctrl+Shift+A"]),
+    cmd("focus.left", "Navigate", "Focus the panel to the left", EVERYWHERE, &["Ctrl+Alt+ArrowLeft"]),
+    cmd("focus.right", "Navigate", "Focus the panel to the right", EVERYWHERE, &["Ctrl+Alt+ArrowRight"]),
+    cmd("focus.up", "Navigate", "Focus the panel above", EVERYWHERE, &["Ctrl+Alt+ArrowUp"]),
+    cmd("focus.down", "Navigate", "Focus the panel below", EVERYWHERE, &["Ctrl+Alt+ArrowDown"]),
+    cmd("app.commandPalette", "Navigate", "Command Palette", EVERYWHERE, &["Ctrl+Shift+P"]),
+    cmd("project.next", "Projects", "Next project", EVERYWHERE, &["Ctrl+Alt+PageDown"]),
+    cmd("project.previous", "Projects", "Previous project", EVERYWHERE, &["Ctrl+Alt+PageUp"]),
     cmd("tabs.next", "Tabs", "Next tab", EVERYWHERE, &["Ctrl+Tab"]),
     cmd("tabs.previous", "Tabs", "Previous tab", EVERYWHERE, &["Ctrl+Shift+Tab"]),
     cmd("panel.splitRight", "Panels", "Split right with a terminal", EVERYWHERE, &["Ctrl+Shift+D"]),
     cmd("panel.splitDown", "Panels", "Split down with a terminal", EVERYWHERE, &["Ctrl+Shift+E"]),
     cmd("panel.close", "Panels", "Close panel", EVERYWHERE, &["Ctrl+Shift+W"]),
+    cmd("panel.rename", "Panels", "Rename panel", EVERYWHERE, &["Ctrl+Alt+R"]),
     cmd("project.new", "Projects", "New project", EVERYWHERE, &["Ctrl+Shift+N"]),
     cmd("view.toggleExplorer", "View", "Toggle File Explorer", EVERYWHERE, &["Ctrl+Alt+N"]),
+    cmd("view.toggleProjects", "View", "Toggle Projects list", EVERYWHERE, &["Ctrl+Alt+P"]),
     cmd("view.fullscreen", "View", "Toggle fullscreen", EVERYWHERE, &["F11"]),
     cmd("app.preferences", "View", "Preferences", EVERYWHERE, &["Ctrl+,"]),
     cmd("zoom.in", "Zoom", "Zoom in", EVERYWHERE, &["Ctrl+=", "Ctrl++"]),
     cmd("zoom.out", "Zoom", "Zoom out", EVERYWHERE, &["Ctrl+-"]),
     cmd("zoom.reset", "Zoom", "Reset zoom", EVERYWHERE, &["Ctrl+0"]),
     cmd("editor.save", "Editor", "Save", EDITOR, &["Ctrl+S"]),
+    cmd("editor.saveAll", "Editor", "Save all", EVERYWHERE, &["Ctrl+Alt+S"]),
     cmd("editor.toggleWordWrap", "Editor", "Toggle word wrap", EDITOR, &["Ctrl+Alt+W"]),
     cmd("search.find", "Search", "Find", PANELS, &["Ctrl+F"]),
     Command {
@@ -218,22 +229,13 @@ const ELSEWHERE: &[&str] = &[
     "panel.zoomIn",
     "panel.zoomOut",
     "panel.zoomReset",
-    "panel.rename",
-    "focus.left",
-    "focus.right",
-    "focus.up",
-    "focus.down",
     "focus.cycle",
     "focus.cycleBack",
-    "focus.notice",
-    "view.toggleProjects",
     "menu.open",
     "tabs.openPicker",
     "preview.open",
     "preview.toggleSyncScroll",
     "navigate.back",
-    "navigate.forward",
-    "editor.saveAll",
     "editor.saveAs",
     "editor.cutLine",
     "editor.indentLines",
@@ -484,6 +486,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn navigation_commands_are_bound_by_default_and_take_no_terminal_chord() {
+        let map = Keymap::defaults(false);
+        let ids = [
+            "project.next",
+            "project.previous",
+            "focus.left",
+            "focus.right",
+            "focus.up",
+            "focus.down",
+            "focus.attention",
+            "panel.rename",
+            "editor.saveAll",
+            "view.toggleProjects",
+            "app.commandPalette",
+        ];
+        for id in ids {
+            let command = command(id).unwrap_or_else(|| panic!("{id} is a command"));
+            assert!(!map.chords(id).is_empty(), "{id} has a default");
+            for chord in map.chords(id) {
+                let free = matches!(terminal_tier(chord, false), TerminalTier::Free);
+                assert!(!command.live_in(Scope::Terminal) || free, "{id}: {chord} is the terminal's");
+            }
+            assert!(!ELSEWHERE.contains(&id), "{id} is a command now, not one from elsewhere");
+        }
+        assert_eq!(map.lookup(&chord("Ctrl+Shift+P"), Scope::Terminal), Some("app.commandPalette"));
+        assert_eq!(map.lookup(&chord("Ctrl+Alt+PageDown"), Scope::Editor), Some("project.next"));
+        assert_eq!(map.lookup(&chord("Ctrl+Alt+ArrowLeft"), Scope::Terminal), Some("focus.left"));
     }
 
     #[test]

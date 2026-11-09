@@ -15,7 +15,6 @@ pub type ReleaseCallback = Box<dyn FnOnce(Option<Release>) + Send>;
 pub type ReleaseSource = Box<dyn Fn(ReleaseCallback)>;
 
 /// The latest release on GitHub. The request carries throng's name and version and nothing else.
-#[must_use]
 pub fn github_releases() -> ReleaseSource {
     Box::new(|done| {
         let mut request = ehttp::Request::get(LATEST_RELEASE_API);

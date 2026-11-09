@@ -230,8 +230,16 @@ pub struct PanelCtx<'a> {
     pub subs: &'a [SubTarget],
     /// Terminals already drawn this frame by the drawing that sizes them.
     pub drawn: &'a mut HashSet<PanelId>,
+    /// Where each panel is drawn this frame, for moving the keyboard by direction (FR-057).
+    pub rects: &'a mut HashMap<PanelId, egui::Rect>,
     /// The workspace being drawn is a sub-workspace, not a project's.
     pub sub_workspace: bool,
+}
+
+/// The widget a mirrored terminal is drawn as (global, so focus can be given from anywhere).
+#[must_use]
+pub fn mirror_widget(panel: PanelId) -> Id {
+    Id::new(("throng-mirror", panel))
 }
 
 /// `<label>` ▸ New Sub-workspace | <sub-workspace> ▸ New Tab | <tab>: Sync to Sub-workspace (shown
@@ -282,7 +290,7 @@ fn mirror_ui(ui: &mut Ui, panel: PanelId, tab_title: &str, ctx: &mut PanelCtx<'_
     };
     match source.kind {
         PanelKind::Terminal(config) => {
-            let label = format!("{} › {} › {}", source.project.name, tab_title, source.title);
+            let label = SpawnPlan::label(&source.project.name, tab_title, &source.title);
             // Spawned (if it must be) as its project's: in its root, under its id.
             terminal_ui(ui, &source.project, source.panel, panel, config, label, ctx);
         }
@@ -329,20 +337,25 @@ impl TabViewer for Viewer<'_, '_> {
                 let failed = view.is_some_and(|v| matches!(v.status, Status::Exited(_) | Status::Failed(_)));
                 let bell = view.is_some_and(|v| v.bell);
                 let admin = view.is_some_and(|v| v.elevated && v.status == Status::Running);
+                // The title a running program set names the tab (FR-055); the shell's own does
+                // not, and a panel renamed by hand keeps its name.
+                let name = match view.and_then(|v| v.program_title.as_deref()) {
+                    Some(title) if !panel.title_is_custom && !title.trim().is_empty() => title.to_owned(),
+                    _ => panel.title.clone(),
+                };
                 if admin {
                     let mut job = egui::text::LayoutJob::default();
                     let font = egui::FontSelection::Style(egui::TextStyle::Button);
-                    let title =
-                        if bell { format!("• {} ", panel.title) } else { format!("{} ", panel.title) };
+                    let title = if bell { format!("• {name} ") } else { format!("{name} ") };
                     RichText::new(title).append_to(&mut job, &self.style, font.clone(), egui::Align::Center);
                     admin_mark().append_to(&mut job, &self.style, font, egui::Align::Center);
                     job.into()
                 } else if failed {
-                    RichText::new(&panel.title).color(Color32::from_rgb(0xe5, 0x53, 0x4b)).into()
+                    RichText::new(name).color(Color32::from_rgb(0xe5, 0x53, 0x4b)).into()
                 } else if bell {
-                    format!("• {}", panel.title).into()
+                    format!("• {name}").into()
                 } else {
-                    panel.title.clone().into()
+                    name.into()
                 }
             }
             PanelKind::Untyped => RichText::new(&panel.title).italics().into(),
@@ -368,6 +381,7 @@ impl TabViewer for Viewer<'_, '_> {
 
     fn ui(&mut self, ui: &mut Ui, tab: &mut PanelId) {
         let panel = *tab;
+        self.ctx.rects.insert(panel, ui.max_rect());
         let Some(record) = self.panels.get(&panel) else { return };
         match record.kind.clone() {
             PanelKind::Untyped => {
@@ -378,7 +392,7 @@ impl TabViewer for Viewer<'_, '_> {
                 }
             }
             PanelKind::Terminal(config) => {
-                let label = format!("{} › {} › {}", self.ctx.project.name, self.tab_title, record.title);
+                let label = SpawnPlan::label(&self.ctx.project.name, &self.tab_title, &record.title);
                 let project = self.ctx.project;
                 terminal_ui(ui, project, panel, panel, config, label, self.ctx);
             }
@@ -616,8 +630,21 @@ fn tab_strip(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         let active = ws.layout.active_tab().map(|t| t.id);
-        let tabs: Vec<(TabId, String)> = ws.layout.tabs.iter().map(|t| (t.id, t.title.clone())).collect();
-        for (id, title) in tabs {
+        // A tab whose panels include a terminal that needs attention says so (FR-055).
+        let tabs: Vec<(TabId, String, bool)> = ws
+            .layout
+            .tabs
+            .iter()
+            .map(|t| {
+                let needs = t
+                    .root
+                    .panels()
+                    .iter()
+                    .any(|p| ctx.hub.views.get(p).is_some_and(TerminalView::needs_attention));
+                (t.id, t.title.clone(), needs)
+            })
+            .collect();
+        for (id, title, needs) in tabs {
             if let Some((renaming_id, text)) = renaming.as_mut()
                 && *renaming_id == id
             {
@@ -638,9 +665,11 @@ fn tab_strip(
             }
             let selected = Some(id) == active;
             // The open tab reads strong over the project's colour; the rest are muted, with a soft
-            // ground only under the pointer.
+            // ground only under the pointer, and a dot while something in them needs attention.
             let text = if selected {
                 RichText::new(&title).color(ui.visuals().strong_text_color())
+            } else if needs {
+                RichText::new(format!("• {title}")).color(ui.visuals().strong_text_color())
             } else {
                 RichText::new(&title).color(ui.visuals().weak_text_color())
             };
@@ -915,8 +944,7 @@ fn terminal_ui(
     let plan = SpawnPlan { project: owner.id, label, root: owner.root.clone(), config };
     let area = ui.max_rect();
     ctx.hub.prepare(session, plan);
-    let widget =
-        if session == panel { view::terminal_id(session) } else { Id::new(("throng-mirror", panel)) };
+    let widget = if session == panel { view::terminal_id(session) } else { mirror_widget(panel) };
     // The first drawing this frame sizes it; the owner's panel is drawn before any mirror.
     let primary = ctx.drawn.insert(session);
     let Some(view) = ctx.hub.views.get_mut(&session) else { return };
@@ -942,6 +970,8 @@ fn terminal_ui(
             return;
         }
         Status::Exited(status) => {
+            // Drawn: the end has been seen (FR-055).
+            view.unseen_exit = false;
             let code = status.code.map_or_else(|| "—".to_owned(), |c| c.to_string());
             banner(
                 ui,
@@ -1074,7 +1104,9 @@ fn finish_terminal_frame(
         if !out.input.is_empty() {
             client.write(view.panel.into(), &out.input);
         }
-        if out.resized {
+        // An observer's first drawing gives it its say in the PTY size (FR-010).
+        if out.resized || view.observing {
+            view.observing = false;
             client.post(Request::Resize {
                 terminal: view.panel.into(),
                 cols: view.size.0,

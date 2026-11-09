@@ -123,9 +123,11 @@ missing. [Open work](#open-work) collects every gap in one list.
     watching still starts.
 - **FR-009** A startup command MUST run once, after the shell's first output, on a cold start
   only, never on reattach. The shell's environment MUST come from the UI at spawn time, with
-  `THRONG_*` removed.
+  `THRONG_*` removed, and then throng's own set: `TERM_PROGRAM`, `THRONG_TERMINAL`,
+  `THRONG_PROJECT` and, for an instance under `THRONG_HOME`, `THRONG_HOME` (FR-056).
 - **FR-010** The PTY size MUST be the smallest across attached views. It MUST change only on a real
-  change, and ignore resizes from views that are no longer attached.
+  change, and ignore resizes from views that are no longer attached. A view attached as an
+  observer (at size 0×0: one not on screen, FR-055) has no say until it resizes.
 - **FR-011** Closing with busy terminals MUST offer exactly *Leave Running*, *Terminate All* and
   *Cancel*. Closing MUST NOT ask about unsaved editors, because FR-027 brings them back.
 - **FR-012** Terminal keys belong to the terminal (Principle IV):
@@ -283,6 +285,27 @@ missing. [Open work](#open-work) collects every gap in one list.
     ending with the one chosen so it keeps the keyboard. Moving between throng's own windows raises
     nothing. Where the windowing system refuses to raise windows (Wayland without an activation
     token), only the chosen one comes forward.
+
+- **FR-055** Attention across projects. Every project's workspace loads at start. A terminal still
+  running in a project not on screen is watched as an observer (FR-010), so its output, bells and
+  title are followed without resizing it; one not running starts when its project is first shown.
+  A terminal needs attention from its bell's first ring until its panel is drawn with the keyboard,
+  and from an end that surfaces (FR-006) until its banner is drawn.
+  - **Where it shows.** The panel's tab carries a dot, and so does a workspace tab holding such a
+    panel while it is not the open tab. Each project's row in the sidebar carries the count of its
+    terminals that need attention, and clicking the count opens the first of them; the row's hover
+    says how many are busy. The window's title carries the total, as `(2) throng`. While a program
+    is listed as running in a terminal (FR-007), its tab reads the title that program sets. Whose a
+    title is follows from the daemon's listings alone: one that arrives while the shell is idle is
+    the shell's own once the next listing still finds it idle, and is never shown; one that arrives
+    before a program is first listed is nobody's, since a prompt's title and a command typed ahead
+    arrive together. A panel renamed by hand keeps its name.
+  - **From another app.** A bell or an end while no throng window has the focus asks the system
+    for attention (a dock bounce, a taskbar flash), once per ring not yet seen. No toast is shown
+    (Principle VI).
+  - **Go to What Needs You** (Go menu, `focus.attention`, Ctrl+Shift+A) brings the first terminal
+    that needs attention to the front, with its project and tab: the active project's first, then
+    the sidebar's order.
 
 ### Editors and documents
 
@@ -462,6 +485,31 @@ missing. [Open work](#open-work) collects every gap in one list.
     - Each side waits for a move it asked for to land rather than answering it, so the two never
       chase each other. A standalone preview is unaffected.
 
+### Remote control
+
+- **FR-056** Remote control. The window listens on an endpoint of its own beside the daemon's
+  (`ui.sock` in the runtime directory; a named pipe on Windows): one JSON line in and one out per
+  connection, answered within five seconds or refused in words. The commands:
+  - **Open** a path at a position. A file opens in an editor of the project that holds it (the
+    window switches to that project) and the window comes forward; a folder opens, or creates, its
+    project (FR-051). A file no project holds is refused in words, and nothing is raised.
+  - **Focus** a terminal: its project, tab and panel come to the front with the keyboard; with no
+    terminal named, the window alone comes forward.
+  - **Notify** with a message: one notice (Principle VI), keyed by the terminal it came from and
+    naming it, with *Show* to go there; the terminal needs attention (FR-055) until it is looked
+    at. The system is asked for attention as for a bell.
+  - **Status** answers every project (name, root, active) and its terminals (label, busy,
+    attention, title, directory), in the sidebar's and the tabs' order.
+  - Every shell learns its terminal and project: the daemon sets `THRONG_TERMINAL` and
+    `THRONG_PROJECT` (beside `TERM_PROGRAM=throng`), which is how a command run in a terminal names
+    it. An endpoint that cannot be opened is said once in a notice; the window runs without it.
+  - **The command line.** `throng open PATH[:LINE[:COL]]`, `throng focus`, `throng notify WORDS…`
+    and `throng status` send the commands above; a relative path is resolved against the caller's
+    folder, and `status` prints its answer as JSON. `throng [FOLDER]` while a throng is open hands
+    the folder to it (with no folder, brings its window forward) rather than refusing to start.
+    Exit status 0 when done; 1, with the reason on standard error, when refused or when no throng
+    answers; 2 for wrong arguments.
+
 ### Appearance and configuration
 
 - **FR-052** Side columns. The projects list and the file tree each sit on the left or the right
@@ -580,6 +628,21 @@ missing. [Open work](#open-work) collects every gap in one list.
     decoded draws the glyph instead: the pack's, when it gives one beside the image, else
     throng's. A pack that sets the `file` icon draws it for every kind of file.
 - **FR-044** Every glyph drawn as text MUST exist in the bundled fonts, and a test enforces it.
+
+- **FR-057** Navigation. Commands, each with a default chord (FR-042) and a place in a menu
+  (Principle VI), move the keyboard without the mouse:
+  - `project.next` and `project.previous` (Ctrl+Alt+PageDown, Ctrl+Alt+PageUp) switch to the next
+    or the previous project in the sidebar's order, wrapping around.
+  - `focus.left`, `focus.right`, `focus.up` and `focus.down` (Ctrl+Alt+Arrows) move the keyboard to
+    the nearest panel in that direction in the open tab, judged by the panels' centres as drawn.
+  - `panel.rename` (Ctrl+Alt+R) renames the panel with the keyboard; `editor.saveAll` (Ctrl+Alt+S)
+    saves every document with unsaved edits and a path; `view.toggleProjects` (Ctrl+Alt+P) hides or
+    shows the projects list, as the View menu's *Projects* does.
+  - `app.commandPalette` (Ctrl+Shift+P) opens the command palette: every command live where the
+    keyboard is, with its chord, then every project and the open project's tabs, by name. Typing
+    filters (every word a case-blind part of the name; the earlier hit first); Enter runs the one
+    selected as if its first chord were pressed, so it reaches whatever has the keyboard. A command
+    with no chord is listed as such, and runs only where the app looks commands up by name.
 
 ### Packaging
 

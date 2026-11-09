@@ -182,7 +182,10 @@ fn trim_end(chars: &[char], start: usize, mut end: usize, url: bool) -> usize {
 }
 
 /// Split a `:line`, `:line:col`, `(line)` or `(line,col)` suffix off a path.
-fn split_position(raw: &str) -> Option<(String, Option<u32>, Option<u32>)> {
+/// Split `path:line:col`, `path:line` or `path(line,col)` into the path and its position. A
+/// bare `C:` is a drive, not a position; text with no position comes back whole.
+#[must_use]
+pub fn split_position(raw: &str) -> Option<(String, Option<u32>, Option<u32>)> {
     let number = |s: &str| {
         (!s.is_empty() && s.chars().all(|c| c.is_ascii_digit())).then(|| s.parse::<u32>().ok()).flatten()
     };

@@ -50,7 +50,9 @@ struct State {
     end_offset: u64,
     exited: Option<ExitStatus>,
     user_killed: bool,
-    views: HashMap<ClientId, (u16, u16)>,
+    /// Attached views and their sizes. An observer (attached at 0×0: a view not on screen) has no
+    /// size until it resizes, and no say in the PTY size meanwhile (FR-010).
+    views: HashMap<ClientId, Option<(u16, u16)>>,
     size: (u16, u16),
     alt: AltScreenScanner,
     seen_output: bool,
@@ -154,6 +156,7 @@ impl Session {
     pub fn spawn(
         spec: &SpawnSpec,
         launch: Launch<'_>,
+        home: Option<&std::path::Path>,
         tail_bytes: usize,
         registry: Arc<Registry>,
         on_exit: impl FnOnce(TerminalId) + Send + 'static,
@@ -171,7 +174,14 @@ impl Session {
             ("COLORTERM".to_owned(), "truecolor".to_owned()),
             ("TERM_PROGRAM".to_owned(), "throng".to_owned()),
             ("TERM_PROGRAM_VERSION".to_owned(), env!("CARGO_PKG_VERSION").to_owned()),
+            // How a program in the shell names this terminal to `throng focus` and friends (FR-056).
+            ("THRONG_TERMINAL".to_owned(), spec.terminal.to_string()),
+            ("THRONG_PROJECT".to_owned(), spec.project.to_string()),
         ]);
+        // An instance under THRONG_HOME: the command line in its shells must find the same one.
+        if let Some(home) = home {
+            env.push(("THRONG_HOME".to_owned(), home.display().to_string()));
+        }
         let start = Start {
             program: spec.program.clone(),
             args: spec.args.clone(),
@@ -336,9 +346,11 @@ impl Session {
             exited: state.exited,
             alt_screen: state.alt.active,
             elevated: self.elevated,
+            pid: self.pid.filter(|_| state.exited.is_none()),
         };
         if state.exited.is_none() {
-            state.views.insert(client, (cols.max(1), rows.max(1)));
+            let size = (cols > 0 && rows > 0).then_some((cols, rows));
+            state.views.insert(client, size);
             self.apply_size(&mut state);
         }
         registry.send(
@@ -378,15 +390,15 @@ impl Session {
         // A resize from a view that is not attached is ignored rather than re-adding a ghost view
         // that would pin the size.
         if let Some(view) = state.views.get_mut(&client) {
-            *view = (cols.max(1), rows.max(1));
+            *view = Some((cols.max(1), rows.max(1)));
             self.apply_size(&mut state);
         }
     }
 
     /// The PTY takes the smallest size across attached views and is only resized on a change.
     fn apply_size(&self, state: &mut State) {
-        let Some(cols) = state.views.values().map(|v| v.0).min() else { return };
-        let Some(rows) = state.views.values().map(|v| v.1).min() else { return };
+        let Some(cols) = state.views.values().flatten().map(|v| v.0).min() else { return };
+        let Some(rows) = state.views.values().flatten().map(|v| v.1).min() else { return };
         if (cols, rows) != state.size {
             state.size = (cols, rows);
             let _ = self.master.lock().resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });

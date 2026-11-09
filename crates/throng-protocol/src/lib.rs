@@ -23,7 +23,7 @@ use throng_core::terminal::ExitStatus;
 /// Bumped whenever a message shape changes. [`ClientMsg::Hello`] and [`ServerMsg::Welcome`] are the
 /// first variants of their enums and must keep their shape forever, so any two versions can at least
 /// tell each other apart.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// The largest frame either side accepts.
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
@@ -54,7 +54,9 @@ pub enum Request {
     /// Start a terminal and attach to it. Fails if a live session with that id exists — reattaching
     /// is an explicit [`Request::Attach`], so identity comes from the caller's intent.
     Spawn(SpawnSpec),
-    /// Attach to an existing session (live or exited-but-unread) and receive its output.
+    /// Attach to an existing session (live or exited-but-unread) and receive its output. A size of
+    /// 0×0 attaches as an observer: a view not on screen, which has no say in the PTY size until
+    /// it sends a [`Request::Resize`] (FR-010).
     Attach {
         terminal: TerminalId,
         cols: u16,
@@ -179,6 +181,9 @@ pub struct Snapshot {
     pub alt_screen: bool,
     /// The shell runs as administrator (Windows).
     pub elevated: bool,
+    /// The shell's pid while it runs, so what it runs can be read from the first frame rather
+    /// than after the first listing (FR-046).
+    pub pid: Option<u32>,
 }
 
 /// A session, as listed.
