@@ -282,7 +282,7 @@ fn mirror_ui(ui: &mut Ui, panel: PanelId, tab_title: &str, ctx: &mut PanelCtx<'_
     };
     match source.kind {
         PanelKind::Terminal(config) => {
-            let label = format!("{} › {} › {}", source.project.name, tab_title, source.title);
+            let label = SpawnPlan::label(&source.project.name, tab_title, &source.title);
             // Spawned (if it must be) as its project's: in its root, under its id.
             terminal_ui(ui, &source.project, source.panel, panel, config, label, ctx);
         }
@@ -378,7 +378,7 @@ impl TabViewer for Viewer<'_, '_> {
                 }
             }
             PanelKind::Terminal(config) => {
-                let label = format!("{} › {} › {}", self.ctx.project.name, self.tab_title, record.title);
+                let label = SpawnPlan::label(&self.ctx.project.name, &self.tab_title, &record.title);
                 let project = self.ctx.project;
                 terminal_ui(ui, project, panel, panel, config, label, self.ctx);
             }
@@ -1074,7 +1074,9 @@ fn finish_terminal_frame(
         if !out.input.is_empty() {
             client.write(view.panel.into(), &out.input);
         }
-        if out.resized {
+        // An observer's first drawing gives it its say in the PTY size (FR-010).
+        if out.resized || view.observing {
+            view.observing = false;
             client.post(Request::Resize {
                 terminal: view.panel.into(),
                 cols: view.size.0,

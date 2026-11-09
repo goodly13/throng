@@ -113,6 +113,10 @@ pub struct TerminalView {
     /// The widgets drawing this terminal: its own panel's, and any mirror's.
     pub(crate) widgets: std::collections::HashSet<egui::Id>,
     pub bell: bool,
+    /// A command other than the shell holds the foreground, as the daemon last listed it.
+    pub busy: bool,
+    /// Attached as an observer (FR-010): its first drawing must tell the daemon its real size.
+    pub observing: bool,
     /// "Project › Tab › Panel", for accessibility and exit notices.
     pub label: String,
     /// The panel's find session, kept across detach and reattach.
@@ -163,6 +167,8 @@ impl TerminalView {
             had_focus: false,
             widgets: std::collections::HashSet::new(),
             bell: false,
+            busy: false,
+            observing: false,
             label: String::new(),
             find: None,
             menu_link: None,

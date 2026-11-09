@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use throng_core::ids::{PanelId, ProjectId, TerminalId};
+use throng_core::project::Project;
 use throng_core::terminal::{
     ExitStatus, ShellInfo, TerminalPanelConfig, is_private_env_var, should_surface_exit,
 };
@@ -25,6 +26,25 @@ pub struct SpawnPlan {
     pub label: String,
     pub root: PathBuf,
     pub config: TerminalPanelConfig,
+}
+
+impl SpawnPlan {
+    /// A panel's plan: spawned as its project's, in its root, labelled for its place.
+    #[must_use]
+    pub fn new(owner: &Project, tab_title: &str, panel_title: &str, config: TerminalPanelConfig) -> Self {
+        Self {
+            project: owner.id,
+            label: Self::label(&owner.name, tab_title, panel_title),
+            root: owner.root.clone(),
+            config,
+        }
+    }
+
+    /// "Project \u{203a} Tab \u{203a} Panel": a terminal's name for accessibility and notices.
+    #[must_use]
+    pub fn label(project: &str, tab_title: &str, panel_title: &str) -> String {
+        format!("{project} \u{203a} {tab_title} \u{203a} {panel_title}")
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +67,9 @@ pub enum HubEvent {
         status: ExitStatus,
     },
     TitleChanged(PanelId),
+    /// The terminal rang its bell while its last ring was already seen: a new call for attention
+    /// (FR-055). Further rings before it is seen are not reported again.
+    Bell(PanelId),
     Clipboard(String),
     /// The shell's working directory changed (for directory memory).
     Directory {
@@ -95,6 +118,9 @@ pub struct TerminalHub {
     /// Panels whose terminal the UI killed, until the daemon reports that end. A new terminal may
     /// start in the panel first, and the old end must not be taken for its.
     killed: HashSet<PanelId>,
+    /// Panels of projects not on screen (FR-055): watched as observers while their terminal runs,
+    /// and left unstarted otherwise until their project is shown.
+    unshown: HashSet<PanelId>,
 }
 
 impl TerminalHub {
@@ -175,6 +201,65 @@ impl TerminalHub {
     #[must_use]
     pub fn is_dormant(&self, panel: PanelId) -> bool {
         self.views.get(&panel).is_some_and(|v| v.status == Status::Dormant)
+    }
+
+    /// `panel` belongs to a project not on screen: its terminal is watched as an observer while it
+    /// runs (attached at 0\u{d7}0, FR-010), and is otherwise left unstarted until the project is shown.
+    pub fn observe(&mut self, panel: PanelId) {
+        self.unshown.insert(panel);
+    }
+
+    #[must_use]
+    pub fn is_unshown(&self, panel: PanelId) -> bool {
+        self.unshown.contains(&panel)
+    }
+
+    /// Attach, as an observer, every unshown view that is not connected yet.
+    pub fn attach_observers(&mut self, client: Option<&Client>) {
+        if self.closing {
+            return;
+        }
+        let Some(client) = client else { return };
+        for panel in self.unshown.iter().copied() {
+            if let Some(view) = self.views.get_mut(&panel)
+                && view.status == Status::Connecting
+                && view.pending.is_none()
+            {
+                let id = client.send(Request::Attach { terminal: TerminalId::from(panel), cols: 0, rows: 0 });
+                view.pending = Some(id);
+                view.observing = true;
+                self.pending.insert(id, (panel, Pending::Attach));
+            }
+        }
+    }
+
+    /// These panels' project is on screen now: a terminal left unstarted starts on its next draw,
+    /// at its real size; one running or ended stays as it is.
+    pub fn wake(&mut self, panels: impl IntoIterator<Item = PanelId>) {
+        for panel in panels {
+            if !self.unshown.remove(&panel) {
+                continue;
+            }
+            if let Some(view) = self.views.get_mut(&panel)
+                && view.status == Status::Dormant
+                && !self.dormant.contains(&panel)
+            {
+                view.status = Status::Connecting;
+                view.pending = None;
+            }
+        }
+    }
+
+    /// The daemon holds no terminal for `panel`: start one, unless the panel waits to be reloaded
+    /// (manual mode) or to be shown (an observer).
+    pub fn attach_refused(&mut self, panel: PanelId, client: Option<&Client>) {
+        if self.dormant.contains(&panel) || self.unshown.contains(&panel) {
+            if let Some(view) = self.views.get_mut(&panel) {
+                view.status = Status::Dormant;
+            }
+        } else if let Some(client) = client {
+            self.spawn(panel, client);
+        }
     }
 
     /// Events raised since the app last looked, outside a daemon event.
@@ -319,6 +404,7 @@ impl TerminalHub {
                         let panel = PanelId::from(info.terminal);
                         let Some(view) = self.views.get_mut(&panel) else { continue };
                         view.shell_pid = info.pid.filter(|_| info.exited.is_none());
+                        view.busy = info.busy && info.exited.is_none();
                         view.process_cwd =
                             view.shell_pid.and_then(throng_platform::process::working_directory);
                         if let Some(dir) = view.settle_directory() {
@@ -348,11 +434,7 @@ impl TerminalHub {
                         }
                     }
                     (Pending::Attach, Err(message)) if message == throng_protocol::NO_SUCH_TERMINAL => {
-                        if self.dormant.contains(&panel) {
-                            view.status = Status::Dormant;
-                        } else if let Some(client) = client {
-                            self.spawn(panel, client);
-                        }
+                        self.attach_refused(panel, client);
                     }
                     (_, Err(message)) => view.status = Status::Failed(message),
                     (_, Ok(_)) => {}
@@ -416,7 +498,12 @@ impl TerminalHub {
                     out.push(HubEvent::TitleChanged(view.panel));
                 }
                 TermEvent::Clipboard(text) => out.push(HubEvent::Clipboard(text)),
-                TermEvent::Bell => view.bell = true,
+                TermEvent::Bell => {
+                    if !view.bell {
+                        view.bell = true;
+                        out.push(HubEvent::Bell(view.panel));
+                    }
+                }
                 // Programs ask what colours they are drawn in (to pick a dark or light theme), and
                 // how big the text area is. Replayed queries never get here: a snapshot's
                 // events are dropped.
@@ -508,5 +595,76 @@ mod tests {
         let events = hub.on_daemon_event(ClientEvent::Exited { terminal: failed.into(), status: bad }, None);
         assert_eq!(events, vec![HubEvent::Failed { panel: failed, status: bad }]);
         assert_eq!(hub.views[&failed].status, Status::Exited(bad));
+    }
+
+    fn project(name: &str) -> throng_core::project::Project {
+        throng_core::project::Project {
+            id: ProjectId::new(),
+            name: name.into(),
+            colour: throng_core::project::Colour { r: 1, g: 2, b: 3 },
+            root: PathBuf::from("/"),
+            hidden_paths: Vec::new(),
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn a_plan_is_labelled_project_tab_panel() {
+        let plan = SpawnPlan::new(&project("Web"), "Tab 2", "Panel 3", TerminalPanelConfig::default());
+        assert_eq!(plan.label, "Web \u{203a} Tab 2 \u{203a} Panel 3");
+        assert_eq!(plan.root, PathBuf::from("/"));
+    }
+
+    #[test]
+    fn an_observer_attach_that_finds_no_terminal_waits_to_be_shown() {
+        let mut hub = TerminalHub::new(Vec::new(), None, 1000);
+        let panel = PanelId::new();
+        hub.prepare(panel, SpawnPlan::new(&project("p"), "t", "p", TerminalPanelConfig::default()));
+        hub.observe(panel);
+        assert!(hub.is_unshown(panel));
+        // The daemon holds no such terminal: an observer does not start one.
+        hub.attach_refused(panel, None);
+        assert_eq!(hub.views[&panel].status, Status::Dormant);
+        assert!(hub.is_unshown(panel));
+        // Shown at last: the panel starts like any other on its next draw.
+        hub.wake([panel]);
+        assert!(!hub.is_unshown(panel));
+        assert_eq!(hub.views[&panel].status, Status::Connecting);
+        assert_eq!(hub.views[&panel].pending, None);
+    }
+
+    #[test]
+    fn an_unshown_terminal_that_ended_keeps_its_end_when_woken() {
+        let mut hub = TerminalHub::new(Vec::new(), None, 1000);
+        let panel = PanelId::new();
+        hub.prepare(panel, SpawnPlan::new(&project("p"), "t", "p", TerminalPanelConfig::default()));
+        hub.observe(panel);
+        let bad = ExitStatus { code: Some(2), user_killed: false };
+        hub.on_daemon_event(ClientEvent::Exited { terminal: panel.into(), status: bad }, None);
+        assert_eq!(hub.views[&panel].status, Status::Exited(bad));
+        hub.wake([panel]);
+        assert_eq!(hub.views[&panel].status, Status::Exited(bad), "woken, not restarted over its end");
+    }
+
+    #[test]
+    fn a_bell_is_reported_once_until_it_is_seen() {
+        let mut hub = TerminalHub::new(Vec::new(), None, 1000);
+        let panel = PanelId::new();
+        hub.prepare(panel, SpawnPlan::new(&project("p"), "t", "p", TerminalPanelConfig::default()));
+        let view = hub.views.get_mut(&panel).unwrap();
+        let mut out = Vec::new();
+        view.feed(0, b"\x07\x07");
+        TerminalHub::emulator_events(view, None, &mut out);
+        assert_eq!(out, vec![HubEvent::Bell(panel)], "two rings, one report");
+        assert!(view.bell);
+        out.clear();
+        view.feed(2, b"\x07");
+        TerminalHub::emulator_events(view, None, &mut out);
+        assert!(out.is_empty(), "unseen still: {out:?}");
+        view.bell = false;
+        view.feed(3, b"\x07");
+        TerminalHub::emulator_events(view, None, &mut out);
+        assert_eq!(out, vec![HubEvent::Bell(panel)], "seen, then rung again");
     }
 }
