@@ -70,6 +70,12 @@ comments, so keep them under the width by hand.
 - **Clipboard chords arrive as events, not keys.** egui-winit turns Ctrl/Cmd+X, C and V into
   `Event::Cut`, `Copy` and `Paste`; matching them as keys never fires.
 - **egui_kittest steps at 1/60 s.** A UI test waits on an observable condition, never a sleep.
+- **Focus is recomputed every frame.** `focus.panel` is reset at the start of drawing and set again
+  only by the panel that holds the keyboard, so a test that moves focus waits for the panel to report
+  it, and only editors and terminals ever do.
+- **The shell knows its terminal.** Every throng shell carries `THRONG_TERMINAL` and `THRONG_PROJECT`;
+  `throng focus`, `throng notify` and `throng open` reach the open window through `remote.rs`
+  (FR-056). A UI test drives it with `remote::send` on a thread while stepping the harness.
 
 ## GitHub
 
