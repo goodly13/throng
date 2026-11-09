@@ -17,6 +17,7 @@ pub mod link;
 pub mod links;
 pub mod logging;
 pub mod markdown;
+pub mod palette;
 pub mod prefs;
 pub mod preview;
 pub mod project_files;

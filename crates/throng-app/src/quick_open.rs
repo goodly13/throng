@@ -25,7 +25,7 @@ pub struct Hit {
 }
 
 /// Length-preserving case folding (a lower-cased copy can change length).
-fn fold(c: char) -> char {
+pub(crate) fn fold(c: char) -> char {
     let mut lower = c.to_lowercase();
     match (lower.next(), lower.next()) {
         (Some(l), None) => l,
@@ -33,7 +33,7 @@ fn fold(c: char) -> char {
     }
 }
 
-fn find_chars(hay: &[char], needle: &[char]) -> Option<usize> {
+pub(crate) fn find_chars(hay: &[char], needle: &[char]) -> Option<usize> {
     if needle.is_empty() || needle.len() > hay.len() {
         return None;
     }

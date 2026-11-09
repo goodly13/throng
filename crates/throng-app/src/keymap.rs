@@ -87,6 +87,11 @@ pub fn take(ctx: &Context, id: &str, scope: Option<Scope>) -> bool {
     if scope.is_some_and(|s| !command.live_in(s)) {
         return false;
     }
+    // Asked for by name (the palette), with no chord to press.
+    if ctx.data(|d| d.get_temp::<String>(pending_id())).is_some_and(|pending| pending == id) {
+        ctx.data_mut(|d| d.remove_temp::<String>(pending_id()));
+        return true;
+    }
     let map = get(ctx);
     let chords = map.chords(id);
     if chords.is_empty() {
@@ -112,6 +117,42 @@ pub fn take(ctx: &Context, id: &str, scope: Option<Scope>) -> bool {
         }
         true
     })
+}
+
+fn request_id() -> egui::Id {
+    egui::Id::new("throng-keymap-request")
+}
+
+fn pending_id() -> egui::Id {
+    egui::Id::new("throng-keymap-pending")
+}
+
+/// Ask for `id` to run on the next frame (the command palette, FR-057): as if its first chord
+/// were pressed, so it reaches whatever has the keyboard.
+pub fn request(ctx: &Context, id: &str) {
+    ctx.data_mut(|d| d.insert_temp(request_id(), id.to_owned()));
+}
+
+/// At the top of a frame: press the requested command's chord, if one was asked for. A command
+/// with no chord is left for [`take`] to find by name this frame.
+pub fn replay_request(ctx: &Context) {
+    ctx.data_mut(|d| d.remove_temp::<String>(pending_id()));
+    let Some(id) = ctx.data_mut(|d| d.remove_temp::<String>(request_id())) else { return };
+    let Some(chord) = get(ctx).chords(&id).first().cloned() else {
+        ctx.data_mut(|d| d.insert_temp(pending_id(), id));
+        return;
+    };
+    let Some(key) = Key::from_name(&chord.key) else { return };
+    let modifiers = Modifiers {
+        alt: chord.alt,
+        ctrl: chord.ctrl && !mac(),
+        shift: chord.shift,
+        mac_cmd: chord.ctrl && mac(),
+        command: chord.ctrl,
+    };
+    ctx.input_mut(|i| {
+        i.events.push(Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers });
+    });
 }
 
 /// The command a key press runs where `scope` has the keyboard.

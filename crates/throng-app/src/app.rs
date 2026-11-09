@@ -585,6 +585,11 @@ impl ThrongApp {
         self.show_projects
     }
 
+    #[must_use]
+    pub fn explorer_shown(&self) -> bool {
+        self.show_explorer
+    }
+
     /// How many of a project's terminals need attention, and how many are busy (FR-055).
     #[must_use]
     pub fn project_activity(&self, project: ProjectId) -> Activity {
@@ -1053,6 +1058,50 @@ impl ThrongApp {
 
     // ---------------------------------------------------------------------------------------------
     // Navigation (FR-057)
+
+    /// Open the command palette: every command live where the keyboard is, with its chord, then
+    /// every project and the active project's tabs.
+    fn command_palette(&mut self, ctx: &Context) {
+        use throng_core::keymap::{COMMANDS, EVERYWHERE, Scope};
+        let active = self.book.active_id();
+        let scope = active
+            .and_then(|pid| self.workspaces.get(&pid))
+            .and_then(|ws| self.active_panel().and_then(|p| ws.layout.panels.get(&p)))
+            .and_then(|record| match &record.kind {
+                PanelKind::Editor(_) => Some(Scope::Editor),
+                PanelKind::Terminal(_) => Some(Scope::Terminal),
+                PanelKind::Preview(_) => Some(Scope::Preview),
+                PanelKind::Search(_) => Some(Scope::FindInFiles),
+                PanelKind::Untyped | PanelKind::Mirror(_) => None,
+            });
+        let everywhere = |c: &throng_core::keymap::Command| EVERYWHERE.iter().all(|s| c.live_in(*s));
+        let mut items: Vec<crate::palette::Item> = COMMANDS
+            .iter()
+            .filter(|c| c.id != "app.commandPalette")
+            .filter(|c| everywhere(c) || scope.is_some_and(|s| c.live_in(s)))
+            .map(|c| {
+                let chord = crate::keymap::label(ctx, c.id);
+                crate::palette::Item {
+                    id: crate::palette::ItemId::Command(c.id),
+                    label: format!("{}: {}", c.group, c.label),
+                    detail: if chord.is_empty() { "no chord".to_owned() } else { chord },
+                }
+            })
+            .collect();
+        items.extend(self.book.projects().iter().map(|p| crate::palette::Item {
+            id: crate::palette::ItemId::Project(p.id),
+            label: format!("Project: {}", p.name),
+            detail: if Some(p.id) == active { "open".to_owned() } else { String::new() },
+        }));
+        if let Some(ws) = active.and_then(|pid| self.workspaces.get(&pid)) {
+            items.extend(ws.layout.tabs.iter().map(|t| crate::palette::Item {
+                id: crate::palette::ItemId::Tab(t.id),
+                label: format!("Tab: {}", t.title),
+                detail: String::new(),
+            }));
+        }
+        self.dialog = Some(Dialog::Palette(crate::palette::Palette::new(items)));
+    }
 
     /// Switch to the next (or the previous) project in the sidebar's order, wrapping around.
     fn switch_project_by(&mut self, ctx: &Context, forward: bool) {
@@ -2094,6 +2143,9 @@ impl ThrongApp {
         let take = |id| crate::keymap::take(ctx, id, None);
         if take("navigate.quickOpen") {
             self.quick_open(ctx);
+        }
+        if take("app.commandPalette") {
+            self.command_palette(ctx);
         }
         if take("focus.attention")
             && let Some((project, panel)) = self.next_attention()
@@ -3479,6 +3531,23 @@ impl ThrongApp {
                 }
                 self.focus_next = Some((crate::editor::editor_id(panel), 1));
             }
+            (Dialog::Palette(_), Answer::Palette(item)) => match item {
+                crate::palette::ItemId::Command(id) => crate::keymap::request(ctx, id),
+                crate::palette::ItemId::Project(project) => {
+                    if self.book.active_id() != Some(project) {
+                        self.switch_project(project);
+                        self.apply_theme(ctx);
+                    }
+                }
+                crate::palette::ItemId::Tab(tab) => {
+                    if let Some(ws) = self.book.active_id().and_then(|pid| self.workspaces.get_mut(&pid))
+                        && ws.layout.tab(tab).is_some()
+                    {
+                        ws.layout.active_tab = Some(tab);
+                        ws.mark_dirty();
+                    }
+                }
+            },
             (Dialog::QuickOpen(_), Answer::QuickOpen(Choice { path, into })) => {
                 if let Some(pid) = self.book.active_id() {
                     let panel = match into {
@@ -3642,6 +3711,13 @@ impl ThrongApp {
             });
             ui.menu_button("Go", |ui| {
                 let has_project = self.book.active_id().is_some();
+                let palette = egui::Button::new("Command Palette…")
+                    .shortcut_text(crate::keymap::label(ui.ctx(), "app.commandPalette"));
+                if ui.add(palette).clicked() {
+                    self.command_palette(ui.ctx());
+                    ui.close();
+                }
+                ui.separator();
                 ui.add_enabled_ui(has_project, |ui| {
                     if ui
                         .add(
@@ -4346,6 +4422,8 @@ impl eframe::App for ThrongApp {
         self.apply_theme(&ctx);
         self.apply_fonts(&ctx);
         self.apply_icons(&ctx);
+        // A command the palette chose last frame is pressed now, as its chord.
+        crate::keymap::replay_request(&ctx);
         // A chord being captured for a key binding is nobody else's.
         let mut actions = if self.prefs.capturing() {
             self.capture_chord(&ctx);

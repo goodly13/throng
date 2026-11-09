@@ -634,9 +634,10 @@ missing. [Open work](#open-work) collects every gap in one list.
     saves every document with unsaved edits and a path; `view.toggleProjects` (Ctrl+Alt+P) hides or
     shows the projects list, as the View menu's *Projects* does.
   - `app.commandPalette` (Ctrl+Shift+P) opens the command palette: every command live where the
-    keyboard is, with its chord, and every project and tab by name. Typing filters; Enter runs.
-
-  *Not yet:* the command palette.
+    keyboard is, with its chord, then every project and the open project's tabs, by name. Typing
+    filters (every word a case-blind part of the name; the earlier hit first); Enter runs the one
+    selected as if its first chord were pressed, so it reaches whatever has the keyboard. A command
+    with no chord is listed as such, and runs only where the app looks commands up by name.
 
 ### Packaging
 

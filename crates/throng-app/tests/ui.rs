@@ -2477,3 +2477,42 @@ fn chords_move_between_panels_projects_and_the_projects_list() {
     steps(&mut harness, 2);
     harness.get_by_role_and_label(egui::accesskit::Role::Button, "Alpha");
 }
+
+#[test]
+fn the_command_palette_switches_projects_and_runs_commands() {
+    let env = Env::new();
+    let (a_root, b_root) = (env.folder("alpha"), env.folder("beta"));
+    env.seed_project(&a_root, "Alpha", 0, true, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, PanelKind::Untyped);
+    });
+    let b = env.seed_project(&b_root, "Beta", 1, false, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, PanelKind::Untyped);
+    });
+    let mut harness = env.app(None);
+    steps(&mut harness, 3);
+    let palette = |harness: &mut Harness<'static, ThrongApp>, text: &str| {
+        harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::P);
+        settle(harness, 300);
+        harness.get_by_role_and_label(egui::accesskit::Role::TextInput, "Command Palette").type_text(text);
+        steps(harness, 2);
+    };
+    // A project, by name.
+    palette(&mut harness, "beta");
+    harness.key_press(Key::Enter);
+    steps(&mut harness, 4);
+    assert_eq!(harness.state().active_project_id(), Some(b));
+    // A command, by name: run as if its chord were pressed.
+    assert!(harness.state().explorer_shown());
+    palette(&mut harness, "toggle file explorer");
+    harness.key_press(Key::Enter);
+    steps(&mut harness, 4);
+    assert!(!harness.state().explorer_shown());
+    // Only commands live where the keyboard is are offered: no editor has it, so none of its.
+    palette(&mut harness, "find and replace");
+    harness.get_by_label("Nothing matches.");
+    harness.key_press(Key::Escape);
+    steps(&mut harness, 2);
+    assert!(harness.query_by_role_and_label(egui::accesskit::Role::TextInput, "Command Palette").is_none());
+}
