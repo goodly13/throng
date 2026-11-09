@@ -36,7 +36,7 @@ use crate::project_files::{Exclusions, FileIndex};
 use crate::quick_open::{Choice, QuickOpen};
 use crate::recovery::Recovery;
 use crate::search_panel::{self, Commit, SearchAction, SearchState};
-use crate::term::hub::{HubEvent, TerminalHub};
+use crate::term::hub::{HubEvent, SpawnPlan, TerminalHub};
 use crate::watch::DirWatcher;
 use crate::workspace_ui::{
     self, Focus, MirrorSource, PanelAction, PanelCtx, Picker, ProjectWorkspace, SubTarget,
@@ -60,6 +60,13 @@ pub struct Services {
     pub releases: crate::update_check::ReleaseSource,
     /// Replaces this install with a newer release, where it can.
     pub installer: std::sync::Arc<dyn crate::self_update::Installer>,
+}
+
+/// What a project's terminals are up to (FR-055): how many need attention, how many are busy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Activity {
+    pub attention: usize,
+    pub busy: usize,
 }
 
 /// The notice that a newer release is out, and its actions.
@@ -142,6 +149,10 @@ pub struct ThrongApp {
     /// Which of throng's windows had the keyboard this frame, as each reported it.
     window_focus: Vec<(egui::ViewportId, bool)>,
     focus_group: crate::focus_group::FocusGroup,
+    /// Whether any throng window had the focus last frame, for system attention requests.
+    windows_focused: bool,
+    /// The attention count the window title carries.
+    attention_shown: usize,
     /// Terminals drawn this frame by the drawing that sizes them.
     drawn: HashSet<PanelId>,
     icon_pack_problems: Vec<(String, String)>,
@@ -213,6 +224,24 @@ pub(crate) fn hint(ctx: &Context, what: &str, id: &str) -> String {
         chord if chord.is_empty() => what.to_owned(),
         chord => format!("{what} ({chord})"),
     }
+}
+
+/// A project's count of terminals that need attention, as a small badge in the warning colour
+/// (FR-055). Clicking it goes to the first of them.
+fn attention_badge(ui: &mut Ui, count: usize) -> egui::Response {
+    let label = if count == 1 { "1 needs attention".to_owned() } else { format!("{count} need attention") };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+    let colour = ui.visuals().warn_fg_color;
+    ui.painter().rect_filled(rect, 9.0, colour);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        count.to_string(),
+        egui::FontId::proportional(11.0),
+        ui.visuals().extreme_bg_color,
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    response.on_hover_text(label)
 }
 
 /// A scroll offset as history keeps it: whole points, never negative.
@@ -336,6 +365,8 @@ impl ThrongApp {
             subs_dirty: false,
             window_focus: Vec::new(),
             focus_group: crate::focus_group::FocusGroup::default(),
+            windows_focused: true,
+            attention_shown: 0,
             drawn: HashSet::new(),
             icon_pack_problems: Vec::new(),
             icons_applied: None,
@@ -369,6 +400,7 @@ impl ThrongApp {
         if let Some(id) = app.book.active_id() {
             app.load_workspace(id);
         }
+        app.load_background_workspaces();
         app.apply_theme(ctx);
         Ok(app)
     }
@@ -497,6 +529,25 @@ impl ThrongApp {
     #[must_use]
     pub fn active_layout(&self) -> Option<&Layout> {
         self.workspaces.get(&self.book.active_id()?).map(|ws| &ws.layout)
+    }
+
+    #[must_use]
+    pub fn active_project_id(&self) -> Option<ProjectId> {
+        self.book.active_id()
+    }
+
+    /// How many of a project's terminals need attention, and how many are busy (FR-055).
+    #[must_use]
+    pub fn project_activity(&self, project: ProjectId) -> Activity {
+        let mut activity = Activity::default();
+        let Some(ws) = self.workspaces.get(&project) else { return activity };
+        for (panel, _) in ws.layout.terminal_panels() {
+            if let Some(view) = self.hub.views.get(&panel.id) {
+                activity.attention += usize::from(view.needs_attention());
+                activity.busy += usize::from(view.busy);
+            }
+        }
+        activity
     }
 
     /// How far down a preview panel is scrolled, and the source line at its top.
@@ -746,7 +797,106 @@ impl ThrongApp {
             self.store_failed("remember the active project", &e);
         }
         self.load_workspace(id);
+        // Shown at last: its terminals left unstarted start now (FR-055).
+        if let Some(ws) = self.workspaces.get(&id) {
+            let panels: Vec<PanelId> = ws.layout.panels.keys().copied().collect();
+            self.hub.wake(panels);
+        }
         self.focus = Focus::default();
+    }
+
+    /// Load every other project's workspace so its terminals can be watched (FR-055): those still
+    /// running are observed, the rest wait until their project is shown.
+    fn load_background_workspaces(&mut self) {
+        let active = self.book.active_id();
+        let others: Vec<ProjectId> =
+            self.book.projects().iter().map(|p| p.id).filter(|id| Some(*id) != active).collect();
+        for id in others {
+            self.load_workspace(id);
+            self.observe_workspace(id);
+        }
+    }
+
+    fn observe_workspace(&mut self, project: ProjectId) {
+        let Some(owner) = self.book.get(project).cloned() else { return };
+        let Some(ws) = self.workspaces.get(&project) else { return };
+        let mut plans = Vec::new();
+        for tab in &ws.layout.tabs {
+            for panel in tab.root.panels() {
+                if let Some(record) = ws.layout.panels.get(&panel)
+                    && let PanelKind::Terminal(config) = &record.kind
+                {
+                    plans.push((panel, SpawnPlan::new(&owner, &tab.title, &record.title, config.clone())));
+                }
+            }
+        }
+        for (panel, plan) in plans {
+            self.hub.prepare(panel, plan);
+            self.hub.observe(panel);
+        }
+    }
+
+    /// The first terminal in `project` that needs attention, in its tabs' order.
+    fn first_attention_in(&self, project: ProjectId) -> Option<PanelId> {
+        let ws = self.workspaces.get(&project)?;
+        ws.layout
+            .tabs
+            .iter()
+            .flat_map(|t| t.root.panels())
+            .find(|p| self.hub.views.get(p).is_some_and(crate::term::TerminalView::needs_attention))
+    }
+
+    /// What needs you first: the active project's terminals, then the others in the sidebar's order.
+    fn next_attention(&self) -> Option<(ProjectId, PanelId)> {
+        let active = self.book.active_id();
+        active
+            .into_iter()
+            .chain(self.book.projects().iter().map(|p| p.id).filter(|id| Some(*id) != active))
+            .find_map(|id| self.first_attention_in(id).map(|panel| (id, panel)))
+    }
+
+    /// Bring a panel to the front: its project, its tab, the panel itself, and the keyboard.
+    fn reveal_panel(&mut self, ctx: &Context, project: ProjectId, panel: PanelId) {
+        if self.book.get(project).is_some() && self.book.active_id() != Some(project) {
+            self.switch_project(project);
+            self.apply_theme(ctx);
+        }
+        let Some(ws) = self.workspaces.get_mut(&project) else { return };
+        let kind = ws.layout.panels.get(&panel).map(|p| p.kind.clone());
+        if ws.layout.focus_panel(panel) {
+            ws.rebuild_all();
+            ws.mark_dirty();
+        }
+        self.focus.panel = Some(panel);
+        let widget = match kind {
+            Some(PanelKind::Terminal(_)) => Some(crate::term::view::terminal_id(panel)),
+            Some(PanelKind::Editor(_)) => Some(crate::editor::editor_id(panel)),
+            _ => None,
+        };
+        if let Some(id) = widget {
+            self.focus_next = Some((id, 1));
+        }
+    }
+
+    /// Ask the system for attention (a dock bounce, a taskbar flash) while no throng window has
+    /// the focus: a bell, or an end, that nobody is looking at (FR-055).
+    fn request_attention(&self, ctx: &Context) {
+        if !self.windows_focused {
+            ctx.send_viewport_cmd_to(
+                egui::ViewportId::ROOT,
+                ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational),
+            );
+        }
+    }
+
+    /// The window's title carries the count of terminals that need attention (FR-055).
+    fn show_attention_total(&mut self, ctx: &Context) {
+        let total: usize = self.book.projects().iter().map(|p| self.project_activity(p.id).attention).sum();
+        if total != self.attention_shown {
+            self.attention_shown = total;
+            let title = if total == 0 { "throng".to_owned() } else { format!("({total}) throng") };
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, ViewportCommand::Title(title));
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1067,6 +1217,7 @@ impl ThrongApp {
         let seen = std::mem::take(&mut self.window_focus);
         let windows: Vec<egui::ViewportId> = seen.iter().map(|(id, _)| *id).collect();
         let focused = seen.iter().find(|(_, f)| *f).map(|(id, _)| *id);
+        self.windows_focused = focused.is_some();
         for window in self.focus_group.update(focused, &windows, Instant::now()) {
             ctx.send_viewport_cmd_to(window, ViewportCommand::Focus);
         }
@@ -1349,7 +1500,8 @@ impl ThrongApp {
                 HubEvent::Captured(panel) => {
                     self.update_terminal(panel, TerminalPanelConfig::capture);
                 }
-                HubEvent::Failed { .. } | HubEvent::TitleChanged(_) | HubEvent::Bell(_) => {}
+                HubEvent::Bell(_) | HubEvent::Failed { .. } => self.request_attention(ctx),
+                HubEvent::TitleChanged(_) => {}
             }
         }
     }
@@ -1692,6 +1844,11 @@ impl ThrongApp {
         let take = |id| crate::keymap::take(ctx, id, None);
         if take("navigate.quickOpen") {
             self.quick_open(ctx);
+        }
+        if take("focus.attention")
+            && let Some((project, panel)) = self.next_attention()
+        {
+            self.reveal_panel(ctx, project, panel);
         }
         if take("search.findInFiles") {
             self.find_in_files(ctx, false, true, None);
@@ -3233,6 +3390,16 @@ impl ThrongApp {
                         ui.close();
                     }
                 });
+                ui.separator();
+                let needs = self.next_attention();
+                let item = egui::Button::new("Go to What Needs You")
+                    .shortcut_text(crate::keymap::label(ui.ctx(), "focus.attention"));
+                if ui.add_enabled(needs.is_some(), item).clicked()
+                    && let Some((project, panel)) = needs
+                {
+                    self.reveal_panel(ui.ctx(), project, panel);
+                    ui.close();
+                }
             });
             ui.menu_button("View", |ui| {
                 ui.checkbox(&mut self.show_explorer, "File Explorer");
@@ -3278,10 +3445,12 @@ impl ThrongApp {
         let active = self.book.active_id();
         let projects: Vec<Project> = self.book.projects().to_vec();
         let mut switch_to = None;
+        let mut reveal = None;
         egui::ScrollArea::vertical().id_salt("projects").show(ui, |ui| {
             for (index, project) in projects.iter().enumerate() {
                 let colour = crate::theme::to_color32(project.colour);
                 let selected = Some(project.id) == active;
+                let activity = self.project_activity(project.id);
                 let response = ui.horizontal(|ui| {
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 18.0), egui::Sense::hover());
                     ui.painter().circle_filled(rect.center(), 5.0, colour);
@@ -3290,14 +3459,20 @@ impl ThrongApp {
                     } else {
                         RichText::new(&project.name)
                     };
-                    // The row's full width is the project's to hover and click; a long name is
-                    // cut short so it never sets the column's width.
-                    ui.add(
-                        egui::Button::selectable(selected, (text, egui::Atom::grow()))
-                            .truncate()
-                            .frame_when_inactive(false)
-                            .min_size(egui::vec2(ui.available_width(), 0.0)),
-                    )
+                    // The attention badge sits at the row's edge (FR-055); the name takes the rest
+                    // of the row to hover and click, cut short so it never sets the column's width.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if activity.attention > 0 && attention_badge(ui, activity.attention).clicked() {
+                            reveal = Some(project.id);
+                        }
+                        ui.add(
+                            egui::Button::selectable(selected, (text, egui::Atom::grow()))
+                                .truncate()
+                                .frame_when_inactive(false)
+                                .min_size(egui::vec2(ui.available_width(), 0.0)),
+                        )
+                    })
+                    .inner
                 });
                 // In a pill style the active project has the accent's bar at the row's edge.
                 if selected && self.look.shape.pills {
@@ -3305,7 +3480,11 @@ impl ThrongApp {
                     let stroke = egui::Stroke::new(2.0, self.look.accent);
                     ui.painter().vline(row.left() - 4.0, row.y_range().shrink(3.0), stroke);
                 }
-                let response = response.inner.on_hover_text(project.root.display().to_string());
+                let mut hover = project.root.display().to_string();
+                if activity.busy > 0 {
+                    hover.push_str(&format!("\n{} running", activity.busy));
+                }
+                let response = response.inner.on_hover_text(hover);
                 if response.clicked() && !selected {
                     switch_to = Some(project.id);
                 }
@@ -3356,6 +3535,11 @@ impl ThrongApp {
         if let Some(id) = switch_to {
             self.switch_project(id);
             self.apply_theme(ctx);
+        }
+        if let Some(id) = reveal
+            && let Some(panel) = self.first_attention_in(id)
+        {
+            self.reveal_panel(ctx, id, panel);
         }
         self.sub_workspace_list(ui);
     }
@@ -3800,6 +3984,7 @@ fn settings_malformed(reason: &str) -> Notice {
 impl eframe::App for ThrongApp {
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.process_link(ctx);
+        self.hub.attach_observers(self.link.client());
         self.check_for_updates(ctx);
         self.hub.remember_directory = self.settings.remember_directory();
         if let Some(again) = self.hub.poll_directories(self.link.client()) {
@@ -3929,6 +4114,7 @@ impl eframe::App for ThrongApp {
             self.apply_fonts(&ctx);
         }
         self.apply_actions(&ctx, actions);
+        self.show_attention_total(&ctx);
         // Sub-workspace windows draw after the main one, so a terminal on screen in both is sized
         // by its own project's panel.
         self.window_focus

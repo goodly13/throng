@@ -285,6 +285,23 @@ missing. [Open work](#open-work) collects every gap in one list.
     nothing. Where the windowing system refuses to raise windows (Wayland without an activation
     token), only the chosen one comes forward.
 
+- **FR-055** Attention across projects. Every project's workspace loads at start. A terminal still
+  running in a project not on screen is watched as an observer (FR-010), so its output, bells and
+  title are followed without resizing it; one not running starts when its project is first shown.
+  A terminal needs attention from its bell's first ring until its panel is drawn with the keyboard,
+  and from an end that surfaces (FR-006) until its banner is drawn.
+  - **Where it shows.** The panel's tab carries a dot, and so does a workspace tab holding such a
+    panel while it is not the open tab. Each project's row in the sidebar carries the count of its
+    terminals that need attention, and clicking the count opens the first of them; the row's hover
+    says how many are busy. The window's title carries the total, as `(2) throng`. A terminal's tab
+    reads the title its program set, until the panel is renamed by hand.
+  - **From another app.** A bell or an end while no throng window has the focus asks the system
+    for attention (a dock bounce, a taskbar flash), once per ring not yet seen. No toast is shown
+    (Principle VI).
+  - **Go to What Needs You** (Go menu, `focus.attention`, Ctrl+Shift+A) brings the first terminal
+    that needs attention to the front, with its project and tab: the active project's first, then
+    the sidebar's order.
+
 ### Editors and documents
 
 - **FR-022** Documents MUST round-trip byte for byte: UTF-8 with or without a BOM, UTF-16 LE/BE, and

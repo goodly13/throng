@@ -103,21 +103,35 @@ impl Env {
             .build_eframe(|cc| ThrongApp::new(&cc.egui_ctx, services).expect("app starts"))
     }
 
-    /// Seed a project with a layout built by `build`.
+    /// Seed the active project, "Seeded", with a layout built by `build`.
     fn seed(&self, root: &Path, build: impl FnOnce(ProjectId, &mut Layout)) -> ProjectId {
+        self.seed_project(root, "Seeded", 0, true, build)
+    }
+
+    /// Seed a project at `position` in the sidebar; `active` makes it the one shown at start.
+    fn seed_project(
+        &self,
+        root: &Path,
+        name: &str,
+        position: usize,
+        active: bool,
+        build: impl FnOnce(ProjectId, &mut Layout),
+    ) -> ProjectId {
         self.dirs.ensure().unwrap();
         let store = Store::open(&self.dirs.database()).unwrap();
         let mut book = ProjectBook::default();
         let project = book
             .create(
                 &PathRules::LINUX,
-                &ProjectInput { name: "Seeded".into(), colour: "#6aa3ff".into(), root: root.to_path_buf() },
+                &ProjectInput { name: name.into(), colour: "#6aa3ff".into(), root: root.to_path_buf() },
                 0,
             )
             .unwrap()
             .clone();
-        store.upsert_project(&project, 0).unwrap();
-        store.set_state(ACTIVE_PROJECT_KEY, Some(&project.id.to_string())).unwrap();
+        store.upsert_project(&project, position).unwrap();
+        if active {
+            store.set_state(ACTIVE_PROJECT_KEY, Some(&project.id.to_string())).unwrap();
+        }
         let mut layout = Layout::new_default(project.id);
         build(project.id, &mut layout);
         store.save_layout(project.id, &layout, 0).unwrap();
@@ -2112,4 +2126,143 @@ fn a_failed_install_says_why_and_keeps_download() {
     harness.get_by_label("Install and Restart");
     assert!(!harness.state().close_confirmed(), "a failed install does not quit");
     assert_eq!(installer.relaunches.load(Ordering::SeqCst), 0);
+}
+
+/// Two projects, "Alpha" (active) and "Beta", each with one terminal panel: their ids and Beta's panel.
+#[cfg(unix)]
+fn alpha_and_beta(env: &Env, beta: TerminalPanelConfig) -> (ProjectId, ProjectId, PanelId) {
+    let (a_root, b_root) = (env.folder("alpha"), env.folder("beta"));
+    let a = env.seed_project(&a_root, "Alpha", 0, true, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(TerminalPanelConfig::default()));
+    });
+    let mut b_panel = None;
+    let b = env.seed_project(&b_root, "Beta", 1, false, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(beta));
+        b_panel = Some(first);
+    });
+    (a, b, b_panel.unwrap())
+}
+
+/// Step frames until a widget labelled `label` exists.
+#[cfg(unix)]
+fn wait_for_label(harness: &mut Harness<'static, ThrongApp>, label: &str) {
+    let deadline = Instant::now() + WAIT;
+    while harness.query_by_label(label).is_none() {
+        assert!(Instant::now() < deadline, "no widget labelled {label}");
+        harness.step();
+        std::thread::sleep(Duration::from_millis(15));
+    }
+}
+
+/// Click a project's row in the sidebar (a button; the status bar names the project with a label).
+#[cfg(unix)]
+fn click_project(harness: &Harness<'static, ThrongApp>, name: &str) {
+    harness.get_by_role_and_label(egui::accesskit::Role::Button, name).click();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_bell_in_another_project_shows_in_the_sidebar_and_the_chord_goes_to_it() {
+    let env = Env::new();
+    let (a, b, b_panel) = alpha_and_beta(&env, TerminalPanelConfig::default());
+    let mut harness = env.app(None);
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().active_project_id(), Some(a));
+    // Beta's terminal starts when Beta is first shown.
+    click_project(&harness, "Beta");
+    wait(&mut harness, "Beta's shell", |app| {
+        app.terminal_status(b_panel) == Some(Status::Running) && !text_of(app, b_panel).trim().is_empty()
+    });
+    let label = "Terminal: Beta \u{203a} Tab 1 \u{203a} Panel 1";
+    harness.get_by_label(label).click();
+    steps(&mut harness, 2);
+    harness.get_by_label(label).type_text("sleep 2; printf '\\a'");
+    harness.key_press(Key::Enter);
+    click_project(&harness, "Alpha");
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().active_project_id(), Some(a));
+    wait(&mut harness, "Beta's bell", |app| app.project_activity(b).attention == 1);
+    steps(&mut harness, 2);
+    harness.get_by_label("1 needs attention");
+    // The chord goes to what needs you: Beta's terminal, whose focus clears it.
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::A);
+    wait(&mut harness, "the switch to Beta", |app| {
+        app.active_project_id() == Some(b) && app.project_activity(b).attention == 0
+    });
+    steps(&mut harness, 2);
+    assert!(harness.query_by_label("1 needs attention").is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_terminals_title_names_its_tab_until_the_panel_is_renamed() {
+    let env = Env::new();
+    let root = env.folder("titles");
+    let mut named = None;
+    env.seed(&root, |project, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(TerminalPanelConfig::default()));
+        let second = layout.add_panel(
+            project,
+            Some(first),
+            Placement::Right,
+            terminal(TerminalPanelConfig::default()),
+        );
+        layout.rename_panel(second, "Mine");
+        named = Some(second);
+    });
+    let named = named.unwrap();
+    let mut harness = env.app(None);
+    let first = first_panel(harness.state());
+    wait(&mut harness, "both shells", |app| {
+        app.terminal_status(first) == Some(Status::Running)
+            && app.terminal_status(named) == Some(Status::Running)
+    });
+    let type_title = |harness: &mut Harness<'static, ThrongApp>, label: &str, title: &str| {
+        harness.get_by_label(label).click();
+        steps(harness, 2);
+        harness.get_by_label(label).type_text(&format!("printf '\\033]0;{title}\\007'"));
+        harness.key_press(Key::Enter);
+    };
+    type_title(&mut harness, "Terminal: Seeded \u{203a} Tab 1 \u{203a} Panel 1", "agent-done");
+    wait_for_label(&mut harness, "agent-done");
+    // A renamed panel keeps its name, whatever its program says.
+    type_title(&mut harness, "Terminal: Seeded \u{203a} Tab 1 \u{203a} Mine", "other-title");
+    settle(&mut harness, 500);
+    harness.get_by_label("Mine");
+    assert!(harness.query_by_label("other-title").is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_running_terminal_in_another_project_is_watched_from_launch() {
+    let env = Env::new();
+    // Beta runs a program that rings every second: whenever the second launch attaches, a ring
+    // follows, and the terminal is busy throughout.
+    let (a, b, b_panel) = alpha_and_beta(&env, startup("sh -c 'while :; do printf \\\\a; sleep 1; done'"));
+    let mut first = env.app(None);
+    steps(&mut first, 3);
+    click_project(&first, "Beta");
+    // Its program is up once the daemon lists the terminal as busy.
+    wait(&mut first, "Beta's program", |app| app.project_activity(b).busy == 1);
+    click_project(&first, "Alpha");
+    steps(&mut first, 2);
+    first.state_mut().request_close();
+    steps(&mut first, 3);
+    first.get_by_label("Leave Running").click();
+    steps(&mut first, 3);
+    assert!(first.state().close_confirmed());
+    drop(first);
+
+    let mut second = env.app(None);
+    steps(&mut second, 3);
+    assert_eq!(second.state().active_project_id(), Some(a), "Beta is never shown");
+    wait(&mut second, "Beta's terminal to be watched", |app| {
+        app.terminal_status(b_panel) == Some(Status::Running)
+            && app.project_activity(b) == throng_app::app::Activity { attention: 1, busy: 1 }
+    });
+    steps(&mut second, 2);
+    second.get_by_label("1 needs attention");
 }

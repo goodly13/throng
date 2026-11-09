@@ -76,6 +76,12 @@ never open a release build's data.
   - *Move to Sub-workspace* (or dragging a tab out of the dock) moves a panel there instead of
     showing it in both places. *Return to ‹project›* brings it back, as does closing it or
     destroying the sub-workspace.
+- **Attention**: a terminal needs you when its bell rings or it exits. Its tab shows a dot, its
+  project's row in the sidebar shows how many need you, the window title shows the total, and
+  throng asks for attention from the dock or taskbar when no throng window has the focus. *Go to
+  What Needs You* (Go menu, Ctrl+Shift+A) brings the first one to the front. Every project's
+  terminals are watched from the moment throng starts, even while the project is not on screen,
+  and a terminal's tab reads the title its program set until you rename the panel.
 - **Themes**: fifteen are built in (Preferences → Themes). *Duplicate* makes an editable copy with a
   picker for each of its 39 colour tokens. Your themes are JSON files in `<config>/themes`. A theme
   may set only some tokens, and throng re-reads the files when they change.
@@ -99,6 +105,7 @@ The default chords (Cmd instead of Ctrl on macOS):
 | Chord | Does |
 |---|---|
 | Ctrl+Shift+T | Quick Open: pick a project file by part of its path |
+| Ctrl+Shift+A | Go to What Needs You: the first terminal whose bell rang or which exited |
 | Ctrl+F, F3 / Shift+F3, Esc | Find in the active editor or terminal; next / previous; close |
 | Ctrl+H (Cmd+Alt+F on macOS) | Replace in the active editor |
 | Ctrl+G | Go to line |

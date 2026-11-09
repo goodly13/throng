@@ -113,6 +113,8 @@ pub struct TerminalView {
     /// The widgets drawing this terminal: its own panel's, and any mirror's.
     pub(crate) widgets: std::collections::HashSet<egui::Id>,
     pub bell: bool,
+    /// The terminal ended (FR-006) and its banner has not been drawn yet.
+    pub unseen_exit: bool,
     /// A command other than the shell holds the foreground, as the daemon last listed it.
     pub busy: bool,
     /// Attached as an observer (FR-010): its first drawing must tell the daemon its real size.
@@ -167,6 +169,7 @@ impl TerminalView {
             had_focus: false,
             widgets: std::collections::HashSet::new(),
             bell: false,
+            unseen_exit: false,
             busy: false,
             observing: false,
             label: String::new(),
@@ -183,6 +186,13 @@ impl TerminalView {
             cell_px: (8, 16),
             preedit: None,
         }
+    }
+
+    /// Whether the terminal needs attention (FR-055): its bell rang, or it ended, and nobody has
+    /// looked yet.
+    #[must_use]
+    pub fn needs_attention(&self) -> bool {
+        self.bell || self.unseen_exit
     }
 
     /// Grows with every byte of output shown (find re-runs when it changes).

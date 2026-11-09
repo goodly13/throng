@@ -40,10 +40,10 @@ impl SpawnPlan {
         }
     }
 
-    /// "Project \u{203a} Tab \u{203a} Panel": a terminal's name for accessibility and notices.
+    /// "Project › Tab › Panel": a terminal's name for accessibility and notices.
     #[must_use]
     pub fn label(project: &str, tab_title: &str, panel_title: &str) -> String {
-        format!("{project} \u{203a} {tab_title} \u{203a} {panel_title}")
+        format!("{project} › {tab_title} › {panel_title}")
     }
 }
 
@@ -184,6 +184,7 @@ impl TerminalHub {
 
     /// Stop showing a panel's terminal without ending it (the panel was removed from view).
     pub fn forget_view(&mut self, panel: PanelId, client: Option<&Client>) {
+        self.unshown.remove(&panel);
         if self.views.remove(&panel).is_some()
             && let Some(client) = client
         {
@@ -281,6 +282,7 @@ impl TerminalHub {
             client.post(Request::Kill { terminal: panel.into() });
         }
         self.killed.insert(panel);
+        self.unshown.remove(&panel);
         self.views.remove(&panel);
         self.plans.remove(&panel);
     }
@@ -467,6 +469,7 @@ impl TerminalHub {
         if should_surface_exit(status) {
             if let Some(view) = self.views.get_mut(&panel) {
                 view.status = Status::Exited(status);
+                view.unseen_exit = true;
             }
             out.push(HubEvent::Failed { panel, status });
         } else {
@@ -612,7 +615,7 @@ mod tests {
     #[test]
     fn a_plan_is_labelled_project_tab_panel() {
         let plan = SpawnPlan::new(&project("Web"), "Tab 2", "Panel 3", TerminalPanelConfig::default());
-        assert_eq!(plan.label, "Web \u{203a} Tab 2 \u{203a} Panel 3");
+        assert_eq!(plan.label, "Web › Tab 2 › Panel 3");
         assert_eq!(plan.root, PathBuf::from("/"));
     }
 

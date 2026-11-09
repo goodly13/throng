@@ -329,20 +329,24 @@ impl TabViewer for Viewer<'_, '_> {
                 let failed = view.is_some_and(|v| matches!(v.status, Status::Exited(_) | Status::Failed(_)));
                 let bell = view.is_some_and(|v| v.bell);
                 let admin = view.is_some_and(|v| v.elevated && v.status == Status::Running);
+                // The program's own title names the tab (FR-055), until the panel is renamed by hand.
+                let name = match view.and_then(|v| v.title.as_deref()) {
+                    Some(title) if !panel.title_is_custom && !title.trim().is_empty() => title.to_owned(),
+                    _ => panel.title.clone(),
+                };
                 if admin {
                     let mut job = egui::text::LayoutJob::default();
                     let font = egui::FontSelection::Style(egui::TextStyle::Button);
-                    let title =
-                        if bell { format!("• {} ", panel.title) } else { format!("{} ", panel.title) };
+                    let title = if bell { format!("• {name} ") } else { format!("{name} ") };
                     RichText::new(title).append_to(&mut job, &self.style, font.clone(), egui::Align::Center);
                     admin_mark().append_to(&mut job, &self.style, font, egui::Align::Center);
                     job.into()
                 } else if failed {
-                    RichText::new(&panel.title).color(Color32::from_rgb(0xe5, 0x53, 0x4b)).into()
+                    RichText::new(name).color(Color32::from_rgb(0xe5, 0x53, 0x4b)).into()
                 } else if bell {
-                    format!("• {}", panel.title).into()
+                    format!("• {name}").into()
                 } else {
-                    panel.title.clone().into()
+                    name.into()
                 }
             }
             PanelKind::Untyped => RichText::new(&panel.title).italics().into(),
@@ -616,8 +620,21 @@ fn tab_strip(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         let active = ws.layout.active_tab().map(|t| t.id);
-        let tabs: Vec<(TabId, String)> = ws.layout.tabs.iter().map(|t| (t.id, t.title.clone())).collect();
-        for (id, title) in tabs {
+        // A tab whose panels include a terminal that needs attention says so (FR-055).
+        let tabs: Vec<(TabId, String, bool)> = ws
+            .layout
+            .tabs
+            .iter()
+            .map(|t| {
+                let needs = t
+                    .root
+                    .panels()
+                    .iter()
+                    .any(|p| ctx.hub.views.get(p).is_some_and(TerminalView::needs_attention));
+                (t.id, t.title.clone(), needs)
+            })
+            .collect();
+        for (id, title, needs) in tabs {
             if let Some((renaming_id, text)) = renaming.as_mut()
                 && *renaming_id == id
             {
@@ -638,9 +655,11 @@ fn tab_strip(
             }
             let selected = Some(id) == active;
             // The open tab reads strong over the project's colour; the rest are muted, with a soft
-            // ground only under the pointer.
+            // ground only under the pointer, and a dot while something in them needs attention.
             let text = if selected {
                 RichText::new(&title).color(ui.visuals().strong_text_color())
+            } else if needs {
+                RichText::new(format!("• {title}")).color(ui.visuals().strong_text_color())
             } else {
                 RichText::new(&title).color(ui.visuals().weak_text_color())
             };
@@ -942,6 +961,8 @@ fn terminal_ui(
             return;
         }
         Status::Exited(status) => {
+            // Drawn: the end has been seen (FR-055).
+            view.unseen_exit = false;
             let code = status.code.map_or_else(|| "—".to_owned(), |c| c.to_string());
             banner(
                 ui,
