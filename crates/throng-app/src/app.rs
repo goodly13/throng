@@ -35,6 +35,9 @@ use crate::links::{Follow, LinkAction};
 use crate::project_files::{Exclusions, FileIndex};
 use crate::quick_open::{Choice, QuickOpen};
 use crate::recovery::Recovery;
+use crate::remote::{
+    Command as RemoteCommand, ProjectStatus, RemoteServer, Reply as RemoteReply, TerminalStatus,
+};
 use crate::search_panel::{self, Commit, SearchAction, SearchState};
 use crate::term::hub::{HubEvent, SpawnPlan, TerminalHub};
 use crate::watch::DirWatcher;
@@ -107,6 +110,9 @@ pub struct ThrongApp {
     explorers: HashMap<ProjectId, Explorer>,
     hub: TerminalHub,
     link: DaemonLink,
+    /// The window's own endpoint for the `throng` command line (FR-056); `None` when it could not
+    /// be opened, which a notice says.
+    remote: Option<RemoteServer>,
     docs: Documents,
     watcher: DirWatcher,
     notices: NoticeCenter,
@@ -322,6 +328,22 @@ impl ThrongApp {
         let repaint = ctx.clone();
         let link = DaemonLink::start(dirs.clone(), exe, move || repaint.request_repaint());
         let repaint = ctx.clone();
+        let remote = match RemoteServer::start(&dirs, move || repaint.request_repaint()) {
+            Ok(server) => Some(server),
+            Err(e) => {
+                tracing::warn!(error = %e, "the command endpoint could not be opened");
+                notices.raise(Notice::new(
+                    "remote:endpoint",
+                    Severity::Warning,
+                    format!(
+                        "The command endpoint could not be opened ({e}): the throng command line will not \
+                         reach this window."
+                    ),
+                ));
+                None
+            }
+        };
+        let repaint = ctx.clone();
         let watcher = DirWatcher::new(move || repaint.request_repaint());
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
 
@@ -336,6 +358,7 @@ impl ThrongApp {
             explorers: HashMap::new(),
             hub,
             link,
+            remote,
             docs: Documents::default(),
             watcher,
             notices,
@@ -534,6 +557,12 @@ impl ThrongApp {
     #[must_use]
     pub fn active_project_id(&self) -> Option<ProjectId> {
         self.book.active_id()
+    }
+
+    /// The panel that has the keyboard, as far as the app knows.
+    #[must_use]
+    pub fn focused_panel(&self) -> Option<PanelId> {
+        self.focus.panel
     }
 
     /// How many of a project's terminals need attention, and how many are busy (FR-055).
@@ -876,6 +905,130 @@ impl ThrongApp {
         if let Some(id) = widget {
             self.focus_next = Some((id, 1));
         }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Remote control (FR-056)
+
+    /// Answer the commands the `throng` command line sent since the last frame.
+    fn serve_remote(&mut self, ctx: &Context) {
+        let incoming = match &self.remote {
+            Some(server) => server.poll(),
+            None => return,
+        };
+        for incoming in incoming {
+            let reply = self.remote_command(ctx, incoming.command);
+            let _ = incoming.respond.send(reply);
+        }
+    }
+
+    fn remote_command(&mut self, ctx: &Context, command: RemoteCommand) -> RemoteReply {
+        match command {
+            RemoteCommand::Open { path, line, column } => {
+                let path = throng_platform::fs::canonicalize(&path).unwrap_or(path);
+                if path.is_dir() {
+                    self.open_folder(&path);
+                    self.apply_theme(ctx);
+                    self.raise_window(ctx);
+                    return RemoteReply::Ok;
+                }
+                let Some(project) = self.book.owner_of(&self.rules, &path).map(|p| p.id) else {
+                    return RemoteReply::Error(format!(
+                        "No project holds {}. Open its folder as a project first.",
+                        path.display()
+                    ));
+                };
+                if self.book.active_id() != Some(project) {
+                    self.switch_project(project);
+                    self.apply_theme(ctx);
+                }
+                self.open_at_line(project, &path, line, column);
+                self.raise_window(ctx);
+                RemoteReply::Ok
+            }
+            RemoteCommand::Focus { terminal } => {
+                if let Some(terminal) = terminal {
+                    let panel = PanelId::from(terminal);
+                    let Some(project) = self.owner_of_panel(panel) else {
+                        return RemoteReply::Error(format!("No terminal {terminal} is open."));
+                    };
+                    self.reveal_panel(ctx, project, panel);
+                }
+                self.raise_window(ctx);
+                RemoteReply::Ok
+            }
+            RemoteCommand::Notify { message, terminal } => {
+                let panel = terminal.map(PanelId::from).filter(|p| self.hub.views.contains_key(p));
+                let mut notice = match panel {
+                    Some(panel) => {
+                        let label = self.hub.views.get(&panel).map(|v| v.label.clone()).unwrap_or_default();
+                        Notice::new(format!("remote:{panel}"), Severity::Info, format!("{label}: {message}"))
+                            .with_action("show", "Show")
+                    }
+                    None => Notice::new("remote", Severity::Info, message),
+                };
+                if let Some(view) = panel.and_then(|p| self.hub.views.get_mut(&p)) {
+                    // The terminal needs attention until it is looked at (FR-055).
+                    view.bell = true;
+                }
+                notice.repeats = 0;
+                self.notices.raise(notice);
+                self.request_attention(ctx);
+                RemoteReply::Ok
+            }
+            RemoteCommand::Status => RemoteReply::Status(self.status()),
+        }
+    }
+
+    /// The workspace (a project's or a sub-workspace's) whose layout holds `panel`.
+    fn owner_of_panel(&self, panel: PanelId) -> Option<ProjectId> {
+        self.workspaces.iter().find(|(_, ws)| ws.layout.panels.contains_key(&panel)).map(|(id, _)| *id)
+    }
+
+    /// Bring the main window forward.
+    fn raise_window(&self, ctx: &Context) {
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, ViewportCommand::Focus);
+    }
+
+    /// Every project and its terminals, in the sidebar's and the tabs' order.
+    fn status(&self) -> Vec<ProjectStatus> {
+        let active = self.book.active_id();
+        self.book
+            .projects()
+            .iter()
+            .map(|project| {
+                let mut terminals = Vec::new();
+                if let Some(ws) = self.workspaces.get(&project.id) {
+                    for tab in &ws.layout.tabs {
+                        for panel in tab.root.panels() {
+                            let Some(record) = ws.layout.panels.get(&panel) else { continue };
+                            if !matches!(record.kind, PanelKind::Terminal(_)) {
+                                continue;
+                            }
+                            let view = self.hub.views.get(&panel);
+                            terminals.push(TerminalStatus {
+                                terminal: panel.into(),
+                                label: view.map_or_else(
+                                    || SpawnPlan::label(&project.name, &tab.title, &record.title),
+                                    |v| v.label.clone(),
+                                ),
+                                busy: view.is_some_and(|v| v.busy),
+                                attention: view.is_some_and(crate::term::TerminalView::needs_attention),
+                                title: view.and_then(|v| v.title.clone()),
+                                directory: view.and_then(|v| v.cwd.clone()),
+                            });
+                        }
+                    }
+                }
+                ProjectStatus {
+                    id: project.id,
+                    name: project.name.clone(),
+                    root: project.root.clone(),
+                    active: Some(project.id) == active,
+                    terminals,
+                }
+            })
+            .collect()
     }
 
     /// Ask the system for attention (a dock bounce, a taskbar flash) while no throng window has
@@ -3759,6 +3912,15 @@ impl ThrongApp {
             match action.as_str() {
                 "replace-daemon" => self.link.replace_blocking_daemon(),
                 "open-settings" => self.prefs.open = true,
+                // A notice from the command line: go to the terminal it came from (FR-056).
+                "show" => {
+                    if let Some(panel) = key.strip_prefix("remote:").and_then(|s| s.parse::<PanelId>().ok())
+                        && let Some(project) = self.owner_of_panel(panel)
+                    {
+                        self.reveal_panel(ui.ctx(), project, panel);
+                        self.notices.dismiss(&key);
+                    }
+                }
                 "update-download" => {
                     let page = throng_core::update::LATEST_RELEASE_PAGE;
                     if let Err(e) = throng_platform::fs::open_with_default_app(page) {
@@ -3985,6 +4147,7 @@ impl eframe::App for ThrongApp {
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.process_link(ctx);
         self.hub.attach_observers(self.link.client());
+        self.serve_remote(ctx);
         self.check_for_updates(ctx);
         self.hub.remember_directory = self.settings.remember_directory();
         if let Some(again) = self.hub.poll_directories(self.link.client()) {

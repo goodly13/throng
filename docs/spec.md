@@ -482,10 +482,24 @@ missing. [Open work](#open-work) collects every gap in one list.
 
 ### Remote control
 
-- **FR-056** Remote control. Every shell learns its terminal and project: the daemon sets
-  `THRONG_TERMINAL` and `THRONG_PROJECT` (beside `TERM_PROGRAM=throng`), which is how a command run
-  in a terminal names it to throng. *Not yet:* the window's endpoint and the `throng` command line
-  that speaks it.
+- **FR-056** Remote control. The window listens on an endpoint of its own beside the daemon's
+  (`ui.sock` in the runtime directory; a named pipe on Windows): one JSON line in and one out per
+  connection, answered within five seconds or refused in words. The commands:
+  - **Open** a path at a position. A file opens in an editor of the project that holds it (the
+    window switches to that project) and the window comes forward; a folder opens, or creates, its
+    project (FR-051). A file no project holds is refused in words, and nothing is raised.
+  - **Focus** a terminal: its project, tab and panel come to the front with the keyboard; with no
+    terminal named, the window alone comes forward.
+  - **Notify** with a message: one notice (Principle VI), keyed by the terminal it came from and
+    naming it, with *Show* to go there; the terminal needs attention (FR-055) until it is looked
+    at. The system is asked for attention as for a bell.
+  - **Status** answers every project (name, root, active) and its terminals (label, busy,
+    attention, title, directory), in the sidebar's and the tabs' order.
+  - Every shell learns its terminal and project: the daemon sets `THRONG_TERMINAL` and
+    `THRONG_PROJECT` (beside `TERM_PROGRAM=throng`), which is how a command run in a terminal names
+    it. An endpoint that cannot be opened is said once in a notice; the window runs without it.
+
+  *Not yet:* the `throng` command line that speaks it.
 
 ### Appearance and configuration
 

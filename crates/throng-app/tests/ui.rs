@@ -2266,3 +2266,77 @@ fn a_running_terminal_in_another_project_is_watched_from_launch() {
     steps(&mut second, 2);
     second.get_by_label("1 needs attention");
 }
+
+/// Send a remote command while the app keeps drawing; its answer.
+fn remote(
+    harness: &mut Harness<'static, ThrongApp>,
+    dirs: &AppDirs,
+    command: throng_app::remote::Command,
+) -> throng_app::remote::Reply {
+    let dirs = dirs.clone();
+    let worker = std::thread::spawn(move || throng_app::remote::send(&dirs, &command, WAIT));
+    while !worker.is_finished() {
+        harness.step();
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    worker.join().unwrap().expect("throng answers")
+}
+
+#[test]
+fn remote_commands_open_files_focus_terminals_and_raise_notices() {
+    use throng_app::remote::{Command, Reply};
+    let env = Env::new();
+    let root = env.folder("remote");
+    let file = root.join("src").join("a.rs");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(TerminalPanelConfig::default()));
+    });
+    let mut harness = env.app(None);
+    let panel = first_panel(harness.state());
+    wait(&mut harness, "the shell", |app| app.terminal_status(panel) == Some(Status::Running));
+
+    // A file opens in the project that holds it, at the position asked for.
+    let open = Command::Open { path: file.clone(), line: Some(2), column: Some(1) };
+    assert_eq!(remote(&mut harness, &env.dirs, open), Reply::Ok);
+    steps(&mut harness, 3);
+    harness.get_by_label("line 2");
+
+    // Status lists the project and its terminal.
+    let Reply::Status(projects) = remote(&mut harness, &env.dirs, Command::Status) else {
+        panic!("no status")
+    };
+    assert_eq!(projects.len(), 1);
+    assert!(projects[0].active);
+    assert_eq!(projects[0].name, "Seeded");
+    let listed =
+        projects[0].terminals.iter().find(|t| t.terminal == panel.into()).expect("the terminal is listed");
+    assert_eq!(listed.label, "Seeded › Tab 1 › Panel 1");
+
+    // A notice points back at the terminal, which then needs attention.
+    let notify = Command::Notify { message: "tests passed".into(), terminal: Some(panel.into()) };
+    assert_eq!(remote(&mut harness, &env.dirs, notify), Reply::Ok);
+    steps(&mut harness, 2);
+    let notices: Vec<_> =
+        harness.state().notices().iter().filter(|n| n.message.contains("tests passed")).cloned().collect();
+    assert_eq!(notices.len(), 1, "{:?}", harness.state().notices());
+    assert!(notices[0].actions.iter().any(|a| a.label == "Show"), "{notices:?}");
+    assert_eq!(harness.state().project_activity(projects[0].id).attention, 1);
+
+    // A path no project holds is refused in words, and raises nothing.
+    let outside = env.folder("elsewhere").join("x.txt");
+    std::fs::write(&outside, "x").unwrap();
+    let before = harness.state().notices().len();
+    let reply = remote(&mut harness, &env.dirs, Command::Open { path: outside, line: None, column: None });
+    assert!(matches!(reply, Reply::Error(ref m) if m.contains("No project")), "{reply:?}");
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().notices().len(), before);
+
+    // Focus brings the terminal's panel back to the front.
+    assert_eq!(remote(&mut harness, &env.dirs, Command::Focus { terminal: Some(panel.into()) }), Reply::Ok);
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().focused_panel(), Some(panel));
+    assert_eq!(harness.state().project_activity(projects[0].id).attention, 0, "seen, with the keyboard");
+}
