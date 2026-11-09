@@ -156,6 +156,7 @@ impl Session {
     pub fn spawn(
         spec: &SpawnSpec,
         launch: Launch<'_>,
+        home: Option<&std::path::Path>,
         tail_bytes: usize,
         registry: Arc<Registry>,
         on_exit: impl FnOnce(TerminalId) + Send + 'static,
@@ -177,6 +178,10 @@ impl Session {
             ("THRONG_TERMINAL".to_owned(), spec.terminal.to_string()),
             ("THRONG_PROJECT".to_owned(), spec.project.to_string()),
         ]);
+        // An instance under THRONG_HOME: the command line in its shells must find the same one.
+        if let Some(home) = home {
+            env.push(("THRONG_HOME".to_owned(), home.display().to_string()));
+        }
         let start = Start {
             program: spec.program.clone(),
             args: spec.args.clone(),

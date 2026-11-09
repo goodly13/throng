@@ -1692,8 +1692,8 @@ fn an_elevated_throng_keeps_administrator_rights_only_for_a_terminal_that_asks()
         !text_of(harness.state(), normal).contains(HIGH),
         "the unticked terminal has no administrator rights"
     );
-    steps(&mut harness, 2);
-    harness.get_by_label("Panel 1");
+    // Idle again (the daemon lists that within its next look), the tabs read their own names.
+    wait_for_label(&mut harness, "Panel 1");
     harness.get_by_label("Panel 2 ADMIN");
     // And throng itself says it runs as administrator.
     harness.get_by_label("ADMIN");
@@ -2146,7 +2146,6 @@ fn alpha_and_beta(env: &Env, beta: TerminalPanelConfig) -> (ProjectId, ProjectId
 }
 
 /// Step frames until a widget labelled `label` exists.
-#[cfg(unix)]
 fn wait_for_label(harness: &mut Harness<'static, ThrongApp>, label: &str) {
     let deadline = Instant::now() + WAIT;
     while harness.query_by_label(label).is_none() {
@@ -2223,7 +2222,7 @@ fn a_terminals_title_names_its_tab_until_the_panel_is_renamed() {
     let type_title = |harness: &mut Harness<'static, ThrongApp>, label: &str, title: &str| {
         harness.get_by_label(label).click();
         steps(harness, 2);
-        harness.get_by_label(label).type_text(&format!("printf '\\033]0;{title}\\007'"));
+        harness.get_by_label(label).type_text(&format!("printf '\\033]0;{title}\\007'; sleep 30"));
         harness.key_press(Key::Enter);
     };
     type_title(&mut harness, "Terminal: Seeded \u{203a} Tab 1 \u{203a} Panel 1", "agent-done");
@@ -2515,4 +2514,65 @@ fn the_command_palette_switches_projects_and_runs_commands() {
     harness.key_press(Key::Escape);
     steps(&mut harness, 2);
     assert!(harness.query_by_role_and_label(egui::accesskit::Role::TextInput, "Command Palette").is_none());
+}
+
+#[test]
+fn the_command_palette_runs_a_command_of_the_focused_editor() {
+    let env = Env::new();
+    let (file, mut harness, _panel) = editor_on(&env, "a.txt", "one\n");
+    harness.get_by_role(egui::accesskit::Role::MultilineTextInput).type_text("x");
+    steps(&mut harness, 2);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\n", "not saved yet");
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::P);
+    settle(&mut harness, 300);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::TextInput, "Command Palette")
+        .type_text("editor: save");
+    steps(&mut harness, 2);
+    harness.key_press(Key::Enter);
+    // The command reaches the editor that had the keyboard before the palette opened.
+    wait(&mut harness, "the file to be saved", |_| std::fs::read_to_string(&file).unwrap() == "xone\n");
+}
+
+#[test]
+fn a_terminal_moved_to_a_sub_workspace_still_needs_you() {
+    use throng_app::remote::{Command, Reply};
+    let env = Env::new();
+    let root = env.folder("subattention");
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(TerminalPanelConfig::default()));
+    });
+    let mut harness = env.app(None);
+    let panel = first_panel(harness.state());
+    wait(&mut harness, "the shell", |app| app.terminal_status(panel) == Some(Status::Running));
+    harness.get_by_label("Panel 1").click_secondary();
+    steps(&mut harness, 3);
+    harness.get_by_label_contains("Move to Sub-workspace").click();
+    steps(&mut harness, 3);
+    harness.get_by_label("New Sub-workspace").click();
+    steps(&mut harness, 4);
+    assert!(harness.state().active_layout().unwrap().is_away(panel));
+    let project = harness.state().active_project_id().unwrap();
+
+    // A notice from the command line marks it; the badge, the status and the chord all see it.
+    let notify = Command::Notify { message: "done".into(), terminal: Some(panel.into()) };
+    assert_eq!(remote(&mut harness, &env.dirs, notify), Reply::Ok);
+    steps(&mut harness, 2);
+    assert_eq!(harness.state().project_activity(project).attention, 1);
+    let Reply::Status(projects) = remote(&mut harness, &env.dirs, Command::Status) else {
+        panic!("no status")
+    };
+    let listed = projects[0]
+        .terminals
+        .iter()
+        .find(|t| t.terminal == panel.into())
+        .expect("an away terminal is listed");
+    assert!(listed.attention);
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::A);
+    // Its mirror in the sub-workspace window takes the keyboard, which is what clears the call.
+    wait(&mut harness, "the terminal to take the keyboard in its sub-workspace", |app| {
+        app.project_activity(project).attention == 0
+    });
+    assert_eq!(harness.state().sub_workspaces().iter().filter(|(_, open)| *open).count(), 1);
 }

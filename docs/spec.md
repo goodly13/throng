@@ -123,7 +123,8 @@ missing. [Open work](#open-work) collects every gap in one list.
     watching still starts.
 - **FR-009** A startup command MUST run once, after the shell's first output, on a cold start
   only, never on reattach. The shell's environment MUST come from the UI at spawn time, with
-  `THRONG_*` removed.
+  `THRONG_*` removed, and then throng's own set: `TERM_PROGRAM`, `THRONG_TERMINAL`,
+  `THRONG_PROJECT` and, for an instance under `THRONG_HOME`, `THRONG_HOME` (FR-056).
 - **FR-010** The PTY size MUST be the smallest across attached views. It MUST change only on a real
   change, and ignore resizes from views that are no longer attached. A view attached as an
   observer (at size 0×0: one not on screen, FR-055) has no say until it resizes.
@@ -293,8 +294,9 @@ missing. [Open work](#open-work) collects every gap in one list.
   - **Where it shows.** The panel's tab carries a dot, and so does a workspace tab holding such a
     panel while it is not the open tab. Each project's row in the sidebar carries the count of its
     terminals that need attention, and clicking the count opens the first of them; the row's hover
-    says how many are busy. The window's title carries the total, as `(2) throng`. A terminal's tab
-    reads the title its program set, until the panel is renamed by hand.
+    says how many are busy. The window's title carries the total, as `(2) throng`. While a program
+    runs in a terminal (FR-007), its tab reads the title that program set; a shell's own title is
+    not shown, and a panel renamed by hand keeps its name.
   - **From another app.** A bell or an end while no throng window has the focus asks the system
     for attention (a dock bounce, a taskbar flash), once per ring not yet seen. No toast is shown
     (Principle VI).

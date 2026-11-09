@@ -81,7 +81,8 @@ never open a release build's data.
   throng asks for attention from the dock or taskbar when no throng window has the focus. *Go to
   What Needs You* (Go menu, Ctrl+Shift+A) brings the first one to the front. Every project's
   terminals are watched from the moment throng starts, even while the project is not on screen,
-  and a terminal's tab reads the title its program set until you rename the panel.
+  and while a program runs in a terminal its tab reads the title that program set, unless you
+  renamed the panel.
 - **Command palette**: Ctrl+Shift+P lists every command live where the keyboard is, with its chord,
   and every project and tab by name. Type to filter, Enter to run.
 - **Themes**: fifteen are built in (Preferences → Themes). *Duplicate* makes an editable copy with a

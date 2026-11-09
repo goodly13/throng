@@ -168,6 +168,9 @@ pub struct ThrongApp {
     windows_focused: bool,
     /// The attention count the window title carries.
     attention_shown: usize,
+    /// A widget in a sub-workspace window to give the keyboard to, after that many frames: egui
+    /// keeps focus per window, so the request is made while that window draws.
+    sub_focus_next: Option<(ProjectId, egui::Id, u8)>,
     /// Terminals drawn this frame by the drawing that sizes them.
     drawn: HashSet<PanelId>,
     /// Where each panel was last drawn, for moving the keyboard by direction (FR-057).
@@ -403,6 +406,7 @@ impl ThrongApp {
             focus_group: crate::focus_group::FocusGroup::default(),
             windows_focused: true,
             attention_shown: 0,
+            sub_focus_next: None,
             drawn: HashSet::new(),
             panel_rects: HashMap::new(),
             show_projects: true,
@@ -890,45 +894,101 @@ impl ThrongApp {
         }
     }
 
-    /// The first terminal in `project` that needs attention, in its tabs' order.
-    fn first_attention_in(&self, project: ProjectId) -> Option<PanelId> {
-        let ws = self.workspaces.get(&project)?;
+    /// The first terminal in `workspace` that needs attention: its tabs' panels in order, then a
+    /// project's panels away in a sub-workspace (FR-021).
+    fn first_attention_in(&self, workspace: ProjectId) -> Option<PanelId> {
+        let ws = self.workspaces.get(&workspace)?;
         ws.layout
             .tabs
             .iter()
             .flat_map(|t| t.root.panels())
+            .chain(ws.layout.away.iter().copied())
             .find(|p| self.hub.views.get(p).is_some_and(crate::term::TerminalView::needs_attention))
     }
 
-    /// What needs you first: the active project's terminals, then the others in the sidebar's order.
+    /// What needs you first: the active project's terminals, the other projects' in the sidebar's
+    /// order, then the sub-workspaces' own.
     fn next_attention(&self) -> Option<(ProjectId, PanelId)> {
         let active = self.book.active_id();
         active
             .into_iter()
             .chain(self.book.projects().iter().map(|p| p.id).filter(|id| Some(*id) != active))
+            .chain(self.subs.list.iter().map(|s| s.id))
             .find_map(|id| self.first_attention_in(id).map(|panel| (id, panel)))
     }
 
-    /// Bring a panel to the front: its project, its tab, the panel itself, and the keyboard.
-    fn reveal_panel(&mut self, ctx: &Context, project: ProjectId, panel: PanelId) {
-        if self.book.get(project).is_some() && self.book.active_id() != Some(project) {
-            self.switch_project(project);
+    /// The widget that takes the keyboard for a panel: a terminal's, an editor's, or a mirror's of
+    /// one of those; none for the rest.
+    fn panel_widget(&self, workspace: ProjectId, panel: PanelId) -> Option<egui::Id> {
+        match &self.workspaces.get(&workspace)?.layout.panels.get(&panel)?.kind {
+            PanelKind::Terminal(_) => Some(crate::term::view::terminal_id(panel)),
+            PanelKind::Editor(_) => Some(crate::editor::editor_id(panel)),
+            PanelKind::Mirror(mirror) => {
+                match &self.workspaces.get(&mirror.project)?.layout.panels.get(&mirror.panel)?.kind {
+                    PanelKind::Terminal(_) => Some(crate::workspace_ui::mirror_widget(panel)),
+                    PanelKind::Editor(_) => Some(crate::editor::editor_id(panel)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Bring a panel to the front with the keyboard: in its project's window, or in the
+    /// sub-workspace window that holds it (its own panel, or a project's panel moved there).
+    fn reveal_panel(&mut self, ctx: &Context, workspace: ProjectId, panel: PanelId) {
+        if self.book.get(workspace).is_none() {
+            self.reveal_in_sub(ctx, workspace, panel);
+            return;
+        }
+        if self.workspaces.get(&workspace).is_some_and(|ws| ws.layout.is_away(panel)) {
+            // Moved to a sub-workspace: shown there, as a mirror of this record.
+            let shown = self.subs.list.iter().find_map(|sub| {
+                let ws = self.workspaces.get(&sub.id)?;
+                let mirror = ws.layout.panels.values().find(
+                    |p| matches!(&p.kind, PanelKind::Mirror(m) if m.project == workspace && m.panel == panel),
+                )?;
+                Some((sub.id, mirror.id))
+            });
+            if let Some((sub, mirror)) = shown {
+                self.reveal_in_sub(ctx, sub, mirror);
+            }
+            return;
+        }
+        if self.book.active_id() != Some(workspace) {
+            self.switch_project(workspace);
             self.apply_theme(ctx);
         }
-        let Some(ws) = self.workspaces.get_mut(&project) else { return };
-        let kind = ws.layout.panels.get(&panel).map(|p| p.kind.clone());
+        self.focus_in(workspace, panel);
+    }
+
+    /// Bring a sub-workspace's window forward with `panel` focused.
+    fn reveal_in_sub(&mut self, ctx: &Context, sub: ProjectId, panel: PanelId) {
+        if let Some(record) = self.subs.get_mut(sub)
+            && !record.open
+        {
+            record.open = true;
+            self.subs_dirty = true;
+        }
+        self.focus_in(sub, panel);
+        ctx.send_viewport_cmd_to(egui::ViewportId::from_hash_of(("throng-sub", sub)), ViewportCommand::Focus);
+    }
+
+    /// Make `panel` its tab's active panel and ask for the keyboard on its next drawing.
+    fn focus_in(&mut self, workspace: ProjectId, panel: PanelId) {
+        let widget = self.panel_widget(workspace, panel);
+        let Some(ws) = self.workspaces.get_mut(&workspace) else { return };
         if ws.layout.focus_panel(panel) {
             ws.rebuild_all();
             ws.mark_dirty();
         }
         self.focus.panel = Some(panel);
-        let widget = match kind {
-            Some(PanelKind::Terminal(_)) => Some(crate::term::view::terminal_id(panel)),
-            Some(PanelKind::Editor(_)) => Some(crate::editor::editor_id(panel)),
-            _ => None,
-        };
         if let Some(id) = widget {
-            self.focus_next = Some((id, 1));
+            if self.book.get(workspace).is_some() {
+                self.focus_next = Some((id, 1));
+            } else {
+                self.sub_focus_next = Some((workspace, id, 1));
+            }
         }
     }
 
@@ -974,7 +1034,7 @@ impl ThrongApp {
             RemoteCommand::Focus { terminal } => {
                 if let Some(terminal) = terminal {
                     let panel = PanelId::from(terminal);
-                    let Some(project) = self.owner_of_panel(panel) else {
+                    let Some(project) = self.workspace_of(panel) else {
                         return RemoteReply::Error(format!("No terminal {terminal} is open."));
                     };
                     self.reveal_panel(ctx, project, panel);
@@ -1005,11 +1065,6 @@ impl ThrongApp {
         }
     }
 
-    /// The workspace (a project's or a sub-workspace's) whose layout holds `panel`.
-    fn owner_of_panel(&self, panel: PanelId) -> Option<ProjectId> {
-        self.workspaces.iter().find(|(_, ws)| ws.layout.panels.contains_key(&panel)).map(|(id, _)| *id)
-    }
-
     /// Bring the main window forward.
     fn raise_window(&self, ctx: &Context) {
         ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, ViewportCommand::Focus);
@@ -1024,25 +1079,35 @@ impl ThrongApp {
             .map(|project| {
                 let mut terminals = Vec::new();
                 if let Some(ws) = self.workspaces.get(&project.id) {
-                    for tab in &ws.layout.tabs {
-                        for panel in tab.root.panels() {
-                            let Some(record) = ws.layout.panels.get(&panel) else { continue };
-                            if !matches!(record.kind, PanelKind::Terminal(_)) {
-                                continue;
-                            }
-                            let view = self.hub.views.get(&panel);
-                            terminals.push(TerminalStatus {
-                                terminal: panel.into(),
-                                label: view.map_or_else(
-                                    || SpawnPlan::label(&project.name, &tab.title, &record.title),
-                                    |v| v.label.clone(),
-                                ),
-                                busy: view.is_some_and(|v| v.busy),
-                                attention: view.is_some_and(crate::term::TerminalView::needs_attention),
-                                title: view.and_then(|v| v.title.clone()),
-                                directory: view.and_then(|v| v.cwd.clone()),
-                            });
+                    // The tabs' terminals in order, then those moved to a sub-workspace (FR-021).
+                    let placed =
+                        ws.layout.tabs.iter().flat_map(|t| {
+                            t.root.panels().into_iter().map(move |p| (p, Some(t.title.as_str())))
+                        });
+                    let away = ws.layout.away.iter().map(|p| (*p, None));
+                    for (panel, tab_title) in placed.chain(away) {
+                        let Some(record) = ws.layout.panels.get(&panel) else { continue };
+                        if !matches!(record.kind, PanelKind::Terminal(_)) {
+                            continue;
                         }
+                        let view = self.hub.views.get(&panel);
+                        terminals.push(TerminalStatus {
+                            terminal: panel.into(),
+                            label: view.map_or_else(
+                                || {
+                                    SpawnPlan::label(
+                                        &project.name,
+                                        tab_title.unwrap_or("Away"),
+                                        &record.title,
+                                    )
+                                },
+                                |v| v.label.clone(),
+                            ),
+                            busy: view.is_some_and(|v| v.busy),
+                            attention: view.is_some_and(crate::term::TerminalView::needs_attention),
+                            title: view.and_then(|v| v.title.clone()),
+                            directory: view.and_then(|v| v.cwd.clone()),
+                        });
                     }
                 }
                 ProjectStatus {
@@ -1189,7 +1254,7 @@ impl ThrongApp {
 
     /// The window's title carries the count of terminals that need attention (FR-055).
     fn show_attention_total(&mut self, ctx: &Context) {
-        let total: usize = self.book.projects().iter().map(|p| self.project_activity(p.id).attention).sum();
+        let total = self.hub.views.values().filter(|v| v.needs_attention()).count();
         if total != self.attention_shown {
             self.attention_shown = total;
             let title = if total == 0 { "throng".to_owned() } else { format!("({total}) throng") };
@@ -1523,6 +1588,18 @@ impl ThrongApp {
 
     fn sub_window(&mut self, ui: &mut Ui, id: ProjectId, class: egui::ViewportClass) {
         let ctx = ui.ctx().clone();
+        // The keyboard asked for a widget here is given here, in this window's own focus.
+        if let Some((sub, widget, wait)) = self.sub_focus_next
+            && sub == id
+        {
+            if wait == 0 {
+                ctx.memory_mut(|m| m.request_focus(widget));
+                self.sub_focus_next = None;
+            } else {
+                self.sub_focus_next = Some((sub, widget, wait - 1));
+                ctx.request_repaint();
+            }
+        }
         let Some(name) = self.subs.get(id).map(|s| s.name.clone()) else { return };
         if class == egui::ViewportClass::Immediate {
             self.window_focus.push((ctx.viewport_id(), ctx.input(|i| i.viewport().focused.unwrap_or(false))));
@@ -3532,7 +3609,17 @@ impl ThrongApp {
                 self.focus_next = Some((crate::editor::editor_id(panel), 1));
             }
             (Dialog::Palette(_), Answer::Palette(item)) => match item {
-                crate::palette::ItemId::Command(id) => crate::keymap::request(ctx, id),
+                crate::palette::ItemId::Command(id) => {
+                    // The keyboard goes back to the panel the palette took it from, so the chord
+                    // pressed next frame reaches that panel (FR-057).
+                    self.focus_next = self
+                        .book
+                        .active_id()
+                        .zip(self.active_panel())
+                        .and_then(|(project, panel)| self.panel_widget(project, panel))
+                        .map(|widget| (widget, 0));
+                    crate::keymap::request(ctx, id);
+                }
                 crate::palette::ItemId::Project(project) => {
                     if self.book.active_id() != Some(project) {
                         self.switch_project(project);
@@ -4149,7 +4236,7 @@ impl ThrongApp {
                 // A notice from the command line: go to the terminal it came from (FR-056).
                 "show" => {
                     if let Some(panel) = key.strip_prefix("remote:").and_then(|s| s.parse::<PanelId>().ok())
-                        && let Some(project) = self.owner_of_panel(panel)
+                        && let Some(project) = self.workspace_of(panel)
                     {
                         self.reveal_panel(ui.ctx(), project, panel);
                         self.notices.dismiss(&key);

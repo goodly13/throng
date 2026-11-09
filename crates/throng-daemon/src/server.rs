@@ -289,6 +289,7 @@ impl Daemon {
                 let spawned = Session::spawn(
                     &spec,
                     launch,
+                    self.config.dirs.home.as_deref(),
                     self.config.tail_bytes,
                     Arc::clone(&self.registry),
                     move |id| {

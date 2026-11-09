@@ -237,14 +237,16 @@ fn a_shell_learns_its_terminal_and_project() {
     let client = h.client();
     let spec = script(
         &h.cwd(),
-        "echo T=$THRONG_TERMINAL P=$THRONG_PROJECT",
-        "echo T=%THRONG_TERMINAL% P=%THRONG_PROJECT%",
+        "echo T=$THRONG_TERMINAL P=$THRONG_PROJECT H=$THRONG_HOME",
+        "echo T=%THRONG_TERMINAL% P=%THRONG_PROJECT% H=%THRONG_HOME%",
     );
     let (terminal, project) = (spec.terminal, spec.project);
     let mut view = View::new(&snapshot(client.request(Request::Spawn(spec), WAIT)));
     view.pump(&client, |v| v.exited.is_some());
-    // How `throng focus` and `throng notify` name the terminal they are typed in (FR-056).
-    assert!(view.contains(&format!("T={terminal} P={project}")), "{}", plain(&view.text));
+    // How `throng focus` and `throng notify` name the terminal they are typed in, and find the
+    // instance it belongs to (FR-056).
+    let home = h.dirs.home.as_ref().unwrap().display();
+    assert!(view.contains(&format!("T={terminal} P={project} H={home}")), "{}", plain(&view.text));
 }
 
 #[test]

@@ -236,6 +236,12 @@ pub struct PanelCtx<'a> {
     pub sub_workspace: bool,
 }
 
+/// The widget a mirrored terminal is drawn as (global, so focus can be given from anywhere).
+#[must_use]
+pub fn mirror_widget(panel: PanelId) -> Id {
+    Id::new(("throng-mirror", panel))
+}
+
 /// `<label>` ▸ New Sub-workspace | <sub-workspace> ▸ New Tab | <tab>: Sync to Sub-workspace (shown
 /// in both places) and Move to Sub-workspace (shown there only) share it.
 fn sub_menu(
@@ -331,8 +337,9 @@ impl TabViewer for Viewer<'_, '_> {
                 let failed = view.is_some_and(|v| matches!(v.status, Status::Exited(_) | Status::Failed(_)));
                 let bell = view.is_some_and(|v| v.bell);
                 let admin = view.is_some_and(|v| v.elevated && v.status == Status::Running);
-                // The program's own title names the tab (FR-055), until the panel is renamed by hand.
-                let name = match view.and_then(|v| v.title.as_deref()) {
+                // The title a running program set names the tab (FR-055); a shell's own title, set
+                // while it is idle, does not, and a panel renamed by hand keeps its name.
+                let name = match view.filter(|v| v.busy).and_then(|v| v.title.as_deref()) {
                     Some(title) if !panel.title_is_custom && !title.trim().is_empty() => title.to_owned(),
                     _ => panel.title.clone(),
                 };
@@ -937,8 +944,7 @@ fn terminal_ui(
     let plan = SpawnPlan { project: owner.id, label, root: owner.root.clone(), config };
     let area = ui.max_rect();
     ctx.hub.prepare(session, plan);
-    let widget =
-        if session == panel { view::terminal_id(session) } else { Id::new(("throng-mirror", panel)) };
+    let widget = if session == panel { view::terminal_id(session) } else { mirror_widget(panel) };
     // The first drawing this frame sizes it; the owner's panel is drawn before any mirror.
     let primary = ctx.drawn.insert(session);
     let Some(view) = ctx.hub.views.get_mut(&session) else { return };
