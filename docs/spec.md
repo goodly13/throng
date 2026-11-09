@@ -125,7 +125,8 @@ missing. [Open work](#open-work) collects every gap in one list.
   only, never on reattach. The shell's environment MUST come from the UI at spawn time, with
   `THRONG_*` removed.
 - **FR-010** The PTY size MUST be the smallest across attached views. It MUST change only on a real
-  change, and ignore resizes from views that are no longer attached.
+  change, and ignore resizes from views that are no longer attached. A view attached as an
+  observer (at size 0×0: one not on screen, FR-055) has no say until it resizes.
 - **FR-011** Closing with busy terminals MUST offer exactly *Leave Running*, *Terminate All* and
   *Cancel*. Closing MUST NOT ask about unsaved editors, because FR-027 brings them back.
 - **FR-012** Terminal keys belong to the terminal (Principle IV):

@@ -446,6 +446,28 @@ fn the_pty_takes_the_smallest_attached_view() {
 }
 
 #[test]
+fn an_observer_attach_has_no_say_in_the_size() {
+    let h = Harness::start();
+    let a = h.client();
+    let b = h.client();
+    let mut spec = interactive(&h.cwd());
+    spec.cols = 100;
+    spec.rows = 30;
+    let terminal = spec.terminal;
+    let (ask, size) = (SIZE_QUERY, size_report);
+    let mut view = View::new(&snapshot(a.request(Request::Spawn(spec), WAIT)));
+    // A view that is not on screen attaches with no size, and the PTY stays as it was.
+    snapshot(b.request(Request::Attach { terminal, cols: 0, rows: 0 }, WAIT));
+    a.write(terminal, ask);
+    view.pump(&a, |v| v.squeezed().contains(&size(30, 100)));
+    // Once it is shown, its resize gives it a say like any other view.
+    b.post(Request::Resize { terminal, cols: 50, rows: 20 });
+    a.write(terminal, ask);
+    view.pump(&a, |v| v.squeezed().contains(&size(20, 50)));
+    a.request(Request::Kill { terminal }, WAIT).unwrap();
+}
+
+#[test]
 fn a_bad_frame_closes_only_that_client() {
     let h = Harness::start();
     let endpoint = Endpoint::for_dirs(&h.dirs);
