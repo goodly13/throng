@@ -232,6 +232,22 @@ fn spawn_streams_output_and_reports_the_exit_code() {
 }
 
 #[test]
+fn a_shell_learns_its_terminal_and_project() {
+    let h = Harness::start();
+    let client = h.client();
+    let spec = script(
+        &h.cwd(),
+        "echo T=$THRONG_TERMINAL P=$THRONG_PROJECT",
+        "echo T=%THRONG_TERMINAL% P=%THRONG_PROJECT%",
+    );
+    let (terminal, project) = (spec.terminal, spec.project);
+    let mut view = View::new(&snapshot(client.request(Request::Spawn(spec), WAIT)));
+    view.pump(&client, |v| v.exited.is_some());
+    // How `throng focus` and `throng notify` name the terminal they are typed in (FR-056).
+    assert!(view.contains(&format!("T={terminal} P={project}")), "{}", plain(&view.text));
+}
+
+#[test]
 fn spawning_into_a_missing_folder_is_refused_in_words() {
     let h = Harness::start();
     let client = h.client();

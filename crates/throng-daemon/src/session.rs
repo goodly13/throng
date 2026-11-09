@@ -173,6 +173,9 @@ impl Session {
             ("COLORTERM".to_owned(), "truecolor".to_owned()),
             ("TERM_PROGRAM".to_owned(), "throng".to_owned()),
             ("TERM_PROGRAM_VERSION".to_owned(), env!("CARGO_PKG_VERSION").to_owned()),
+            // How a program in the shell names this terminal to `throng focus` and friends (FR-056).
+            ("THRONG_TERMINAL".to_owned(), spec.terminal.to_string()),
+            ("THRONG_PROJECT".to_owned(), spec.project.to_string()),
         ]);
         let start = Start {
             program: spec.program.clone(),

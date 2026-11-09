@@ -480,6 +480,13 @@ missing. [Open work](#open-work) collects every gap in one list.
     - Each side waits for a move it asked for to land rather than answering it, so the two never
       chase each other. A standalone preview is unaffected.
 
+### Remote control
+
+- **FR-056** Remote control. Every shell learns its terminal and project: the daemon sets
+  `THRONG_TERMINAL` and `THRONG_PROJECT` (beside `TERM_PROGRAM=throng`), which is how a command run
+  in a terminal names it to throng. *Not yet:* the window's endpoint and the `throng` command line
+  that speaks it.
+
 ### Appearance and configuration
 
 - **FR-052** Side columns. The projects list and the file tree each sit on the left or the right
