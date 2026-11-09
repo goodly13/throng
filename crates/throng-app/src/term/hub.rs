@@ -406,7 +406,7 @@ impl TerminalHub {
                         let panel = PanelId::from(info.terminal);
                         let Some(view) = self.views.get_mut(&panel) else { continue };
                         view.shell_pid = info.pid.filter(|_| info.exited.is_none());
-                        view.busy = info.busy && info.exited.is_none();
+                        view.set_busy(info.busy && info.exited.is_none());
                         view.process_cwd =
                             view.shell_pid.and_then(throng_platform::process::working_directory);
                         if let Some(dir) = view.settle_directory() {
@@ -493,11 +493,21 @@ impl TerminalHub {
                     }
                 }
                 TermEvent::Title(title) => {
-                    view.title = Some(title);
+                    // Whose title? The daemon's last word on busy is up to a second and a half
+                    // old, so when it says idle the shell's children are looked at right now; a
+                    // shell not listed yet cannot be judged.
+                    let busy = if view.busy {
+                        Some(true)
+                    } else {
+                        view.shell_pid.map(|pid| {
+                            throng_platform::process::ProcessTable::snapshot().running_command(pid).is_some()
+                        })
+                    };
+                    view.set_title(Some(title), busy);
                     out.push(HubEvent::TitleChanged(view.panel));
                 }
                 TermEvent::ResetTitle => {
-                    view.title = None;
+                    view.set_title(None, Some(false));
                     out.push(HubEvent::TitleChanged(view.panel));
                 }
                 TermEvent::Clipboard(text) => out.push(HubEvent::Clipboard(text)),

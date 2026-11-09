@@ -105,6 +105,12 @@ pub struct TerminalView {
     /// Columns × rows the emulator currently has.
     pub size: (u16, u16),
     pub title: Option<String>,
+    /// The title a program running in the terminal set (FR-055): `title` when it was set while a
+    /// program other than the shell ran, and gone when that program ends. The shell's own never
+    /// counts.
+    pub program_title: Option<String>,
+    /// The title last known to be the shell's own: what showed while nothing ran.
+    idle_title: Option<String>,
     /// Request id of an attach/spawn in flight.
     pub pending: Option<u64>,
     pub(crate) selecting: bool,
@@ -163,6 +169,8 @@ impl TerminalView {
             status: Status::Connecting,
             size,
             title: None,
+            program_title: None,
+            idle_title: None,
             pending: None,
             selecting: false,
             scroll_remainder: 0.0,
@@ -186,6 +194,39 @@ impl TerminalView {
             cell_px: (8, 16),
             preedit: None,
         }
+    }
+
+    /// A title set with OSC 0 or 2, or `None` for a reset. `busy` is whether a program other than
+    /// the shell runs at this moment, when that can be told: a title set while the shell is idle
+    /// is the shell's own; one set at a moment nobody can judge is settled by [`Self::set_busy`].
+    pub fn set_title(&mut self, title: Option<String>, busy: Option<bool>) {
+        match busy {
+            Some(true) => self.program_title = title.clone(),
+            Some(false) => {
+                self.program_title = None;
+                self.idle_title = title.clone();
+            }
+            None => {}
+        }
+        self.title = title;
+    }
+
+    /// The daemon's latest word on whether a program runs. A program's start adopts a title that
+    /// arrived unjudged, unless it is what the idle shell showed; its end takes the title with it.
+    pub fn set_busy(&mut self, busy: bool) {
+        if busy
+            && !self.busy
+            && self.program_title.is_none()
+            && self.title.is_some()
+            && self.title != self.idle_title
+        {
+            self.program_title = self.title.clone();
+        }
+        if !busy {
+            self.program_title = None;
+            self.idle_title = self.title.clone();
+        }
+        self.busy = busy;
     }
 
     /// Whether the terminal needs attention (FR-055): its bell rang, or it ended, and nobody has
@@ -439,6 +480,35 @@ mod tests {
         let mut view = TerminalView::new(PanelId::new(), 1000);
         view.feed(0, b"\x1b]0;build: web\x07");
         assert!(view.drain_events().iter().any(|e| matches!(e, TermEvent::Title(t) if t == "build: web")));
+    }
+
+    #[test]
+    fn a_programs_title_is_told_from_the_shells() {
+        let mut view = TerminalView::new(PanelId::new(), 100);
+        // The shell's prompt sets a title while nothing runs: the shell's own.
+        view.set_title(Some("me@host: ~".into()), Some(false));
+        assert_eq!(view.program_title, None);
+        // A command starts and sets no title of its own: the shell's stays its own.
+        view.set_busy(true);
+        assert_eq!(view.program_title, None, "the shell's title is not a program's");
+        // The program sets one: that names the tab (FR-055).
+        view.set_title(Some("vim notes.md".into()), Some(true));
+        assert_eq!(view.program_title.as_deref(), Some("vim notes.md"));
+        // The program ends: the title goes with it, whatever the shell says next.
+        view.set_busy(false);
+        assert_eq!(view.program_title, None);
+        view.set_title(Some("me@host: ~".into()), Some(false));
+        assert_eq!(view.program_title, None);
+        // Before the daemon lists the shell nothing can be judged; the first listing settles it.
+        let mut fresh = TerminalView::new(PanelId::new(), 100);
+        fresh.set_title(Some("me@host: ~".into()), None);
+        fresh.set_busy(false);
+        fresh.set_busy(true);
+        assert_eq!(fresh.program_title, None, "what the idle shell showed is the shell's own");
+        let mut fresh = TerminalView::new(PanelId::new(), 100);
+        fresh.set_title(Some("make".into()), None);
+        fresh.set_busy(true);
+        assert_eq!(fresh.program_title.as_deref(), Some("make"), "a program ran from the start");
     }
 
     #[test]

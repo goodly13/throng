@@ -2222,7 +2222,10 @@ fn a_terminals_title_names_its_tab_until_the_panel_is_renamed() {
     let type_title = |harness: &mut Harness<'static, ThrongApp>, label: &str, title: &str| {
         harness.get_by_label(label).click();
         steps(harness, 2);
-        harness.get_by_label(label).type_text(&format!("printf '\\033]0;{title}\\007'; sleep 30"));
+        // A program (a child shell) sets the title and stays: that is whose title a tab reads.
+        harness
+            .get_by_label(label)
+            .type_text(&format!("sh -c \"printf '\\\\033]0;{title}\\\\007'; sleep 30\""));
         harness.key_press(Key::Enter);
     };
     type_title(&mut harness, "Terminal: Seeded \u{203a} Tab 1 \u{203a} Panel 1", "agent-done");

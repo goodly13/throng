@@ -295,8 +295,9 @@ missing. [Open work](#open-work) collects every gap in one list.
     panel while it is not the open tab. Each project's row in the sidebar carries the count of its
     terminals that need attention, and clicking the count opens the first of them; the row's hover
     says how many are busy. The window's title carries the total, as `(2) throng`. While a program
-    runs in a terminal (FR-007), its tab reads the title that program set; a shell's own title is
-    not shown, and a panel renamed by hand keeps its name.
+    runs in a terminal (FR-007), its tab reads the title that program set, told from the shell's
+    own by whether a program was running when it arrived; the shell's title is never shown, and a
+    panel renamed by hand keeps its name.
   - **From another app.** A bell or an end while no throng window has the focus asks the system
     for attention (a dock bounce, a taskbar flash), once per ring not yet seen. No toast is shown
     (Principle VI).

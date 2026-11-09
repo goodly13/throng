@@ -337,9 +337,9 @@ impl TabViewer for Viewer<'_, '_> {
                 let failed = view.is_some_and(|v| matches!(v.status, Status::Exited(_) | Status::Failed(_)));
                 let bell = view.is_some_and(|v| v.bell);
                 let admin = view.is_some_and(|v| v.elevated && v.status == Status::Running);
-                // The title a running program set names the tab (FR-055); a shell's own title, set
-                // while it is idle, does not, and a panel renamed by hand keeps its name.
-                let name = match view.filter(|v| v.busy).and_then(|v| v.title.as_deref()) {
+                // The title a running program set names the tab (FR-055); the shell's own does
+                // not, and a panel renamed by hand keeps its name.
+                let name = match view.and_then(|v| v.program_title.as_deref()) {
                     Some(title) if !panel.title_is_custom && !title.trim().is_empty() => title.to_owned(),
                     _ => panel.title.clone(),
                 };

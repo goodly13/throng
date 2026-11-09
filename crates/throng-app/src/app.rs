@@ -1105,7 +1105,7 @@ impl ThrongApp {
                             ),
                             busy: view.is_some_and(|v| v.busy),
                             attention: view.is_some_and(crate::term::TerminalView::needs_attention),
-                            title: view.and_then(|v| v.title.clone()),
+                            title: view.and_then(|v| v.program_title.clone()),
                             directory: view.and_then(|v| v.cwd.clone()),
                         });
                     }
