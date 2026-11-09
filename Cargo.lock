@@ -4053,6 +4053,7 @@ dependencies = [
  "ehttp",
  "fontdb",
  "image",
+ "interprocess",
  "notify",
  "pulldown-cmark",
  "rfd",

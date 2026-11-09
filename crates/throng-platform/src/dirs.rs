@@ -129,6 +129,18 @@ impl AppDirs {
     pub fn ui_lock(&self) -> PathBuf {
         self.runtime.join("ui.lock")
     }
+
+    /// The window's own local socket (Unix), where the `throng` command line reaches it (FR-056).
+    #[must_use]
+    pub fn ui_socket(&self) -> PathBuf {
+        self.runtime.join("ui.sock")
+    }
+
+    /// The window's named pipe (Windows), beside the daemon's.
+    #[must_use]
+    pub fn ui_pipe_name(&self) -> String {
+        format!("{}-ui", self.pipe_name())
+    }
 }
 
 /// An elevated Windows process gets a daemon of its own, beside the one its user's normal processes

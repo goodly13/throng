@@ -22,6 +22,7 @@ pub mod preview;
 pub mod project_files;
 pub mod quick_open;
 pub mod recovery;
+pub mod remote;
 pub mod search_panel;
 pub mod self_update;
 pub mod status_strip;
