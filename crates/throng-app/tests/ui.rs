@@ -2596,12 +2596,11 @@ fn a_shells_own_title_never_names_the_tab() {
     let label = "Terminal: Seeded › Tab 1 › Panel 1";
     harness.get_by_label(label).click();
     steps(&mut harness, 2);
-    // The shell's own title, set at its prompt, then a command that sets none.
+    // The shell's own title, set at its prompt (a shell that titles every prompt sets its own again
+    // at once), then a command that sets none.
     harness.get_by_label(label).type_text("printf '\\033]0;me@host: ~\\007'");
     harness.key_press(Key::Enter);
-    wait(&mut harness, "the title to arrive", |app| {
-        app.terminal_title(panel).as_deref() == Some("me@host: ~")
-    });
+    wait(&mut harness, "a title to arrive", |app| app.terminal_title(panel).is_some());
     harness.get_by_label(label).type_text("sleep 300");
     harness.key_press(Key::Enter);
     wait(&mut harness, "the command to be seen", |app| {
