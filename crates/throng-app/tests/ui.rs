@@ -2579,3 +2579,34 @@ fn a_terminal_moved_to_a_sub_workspace_still_needs_you() {
     });
     assert_eq!(harness.state().sub_workspaces().iter().filter(|(_, open)| *open).count(), 1);
 }
+
+/// Ubuntu's bash sets a title at every prompt, before the daemon has listed the shell.
+#[cfg(unix)]
+#[test]
+fn a_shells_own_title_never_names_the_tab() {
+    let env = Env::new();
+    let root = env.folder("shelltitle");
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(TerminalPanelConfig::default()));
+    });
+    let mut harness = env.app(None);
+    let panel = first_panel(harness.state());
+    wait(&mut harness, "the shell", |app| app.terminal_status(panel) == Some(Status::Running));
+    let label = "Terminal: Seeded › Tab 1 › Panel 1";
+    harness.get_by_label(label).click();
+    steps(&mut harness, 2);
+    // The shell's own title, set at its prompt, then a command that sets none.
+    harness.get_by_label(label).type_text("printf '\\033]0;me@host: ~\\007'");
+    harness.key_press(Key::Enter);
+    wait(&mut harness, "the title to arrive", |app| {
+        app.terminal_title(panel).as_deref() == Some("me@host: ~")
+    });
+    harness.get_by_label(label).type_text("sleep 300");
+    harness.key_press(Key::Enter);
+    wait(&mut harness, "the command to be seen", |app| {
+        app.project_activity(app.active_project_id().unwrap()).busy == 1
+    });
+    steps(&mut harness, 2);
+    harness.get_by_label("Panel 1");
+}

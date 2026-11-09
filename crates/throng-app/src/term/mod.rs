@@ -253,6 +253,7 @@ impl TerminalView {
         while self.events.try_recv().is_ok() {}
         self.seen_until = snapshot.end_offset;
         self.elevated = snapshot.elevated;
+        self.shell_pid = snapshot.pid.filter(|_| snapshot.exited.is_none());
         self.status = match snapshot.exited {
             Some(status) => Status::Exited(status),
             None => Status::Running,
@@ -407,6 +408,7 @@ mod tests {
             exited: None,
             alt_screen: false,
             elevated: false,
+            pid: None,
         }
     }
 

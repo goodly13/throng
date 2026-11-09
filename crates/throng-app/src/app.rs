@@ -642,6 +642,12 @@ impl ThrongApp {
         self.hub.views.get(&panel).and_then(|v| v.cwd.clone())
     }
 
+    /// The title a terminal's program or shell last set, whosever it is.
+    #[must_use]
+    pub fn terminal_title(&self, panel: PanelId) -> Option<String> {
+        self.hub.views.get(&panel).and_then(|v| v.title.clone())
+    }
+
     #[must_use]
     pub fn terminal_status(&self, panel: PanelId) -> Option<crate::term::Status> {
         self.hub.views.get(&panel).map(|v| v.status.clone())

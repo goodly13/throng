@@ -346,6 +346,7 @@ impl Session {
             exited: state.exited,
             alt_screen: state.alt.active,
             elevated: self.elevated,
+            pid: self.pid.filter(|_| state.exited.is_none()),
         };
         if state.exited.is_none() {
             let size = (cols > 0 && rows > 0).then_some((cols, rows));
