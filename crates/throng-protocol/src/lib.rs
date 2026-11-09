@@ -181,8 +181,8 @@ pub struct Snapshot {
     pub alt_screen: bool,
     /// The shell runs as administrator (Windows).
     pub elevated: bool,
-    /// The shell's pid while it runs, so a title it or a program sets can be judged at once by
-    /// whether the shell has a child (FR-055).
+    /// The shell's pid while it runs, so what it runs can be read from the first frame rather
+    /// than after the first listing (FR-046).
     pub pid: Option<u32>,
 }
 

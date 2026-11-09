@@ -2222,17 +2222,21 @@ fn a_terminals_title_names_its_tab_until_the_panel_is_renamed() {
     let type_title = |harness: &mut Harness<'static, ThrongApp>, label: &str, title: &str| {
         harness.get_by_label(label).click();
         steps(harness, 2);
-        // A program (a child shell) sets the title and stays: that is whose title a tab reads.
+        // A program sets the title once the daemon has listed it as running, and stays: that is
+        // whose title a tab reads.
         harness
             .get_by_label(label)
-            .type_text(&format!("sh -c \"printf '\\\\033]0;{title}\\\\007'; sleep 30\""));
+            .type_text(&format!("sh -c \"sleep 3; printf '\\\\033]0;{title}\\\\007'; sleep 30\""));
         harness.key_press(Key::Enter);
     };
     type_title(&mut harness, "Terminal: Seeded \u{203a} Tab 1 \u{203a} Panel 1", "agent-done");
     wait_for_label(&mut harness, "agent-done");
     // A renamed panel keeps its name, whatever its program says.
     type_title(&mut harness, "Terminal: Seeded \u{203a} Tab 1 \u{203a} Mine", "other-title");
-    settle(&mut harness, 500);
+    wait(&mut harness, "its program's title", |app| {
+        app.terminal_title(named).as_deref() == Some("other-title")
+    });
+    steps(&mut harness, 2);
     harness.get_by_label("Mine");
     assert!(harness.query_by_label("other-title").is_none());
 }
@@ -2605,6 +2609,38 @@ fn a_shells_own_title_never_names_the_tab() {
     harness.key_press(Key::Enter);
     wait(&mut harness, "the command to be seen", |app| {
         app.project_activity(app.active_project_id().unwrap()).busy == 1
+    });
+    steps(&mut harness, 2);
+    harness.get_by_label("Panel 1");
+}
+
+/// A shell that titles every prompt (Ubuntu's bash does), with the next command typed before the
+/// prompt is drawn: the title and the command's start arrive together.
+#[cfg(unix)]
+#[test]
+fn a_prompts_title_with_a_command_typed_ahead_never_names_the_tab() {
+    let env = Env::new();
+    let root = env.folder("typeahead");
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(TerminalPanelConfig::default()));
+    });
+    let mut harness = env.app(None);
+    let panel = first_panel(harness.state());
+    wait(&mut harness, "the shell's prompt", |app| {
+        app.terminal_status(panel) == Some(Status::Running) && !text_of(app, panel).trim().is_empty()
+    });
+    let label = "Terminal: Seeded › Tab 1 › Panel 1";
+    harness.get_by_label(label).click();
+    steps(&mut harness, 2);
+    // Both lines go in one burst: the new prompt sets its title, and the command starts at once.
+    harness.get_by_label(label).type_text("PS1=\"$(printf '\\033]0;me@host: ~\\007')$ \"");
+    harness.key_press(Key::Enter);
+    harness.get_by_label(label).type_text("sleep 300");
+    harness.key_press(Key::Enter);
+    wait(&mut harness, "the prompt's title and the command", |app| {
+        app.terminal_title(panel).as_deref() == Some("me@host: ~")
+            && app.project_activity(app.active_project_id().unwrap()).busy == 1
     });
     steps(&mut harness, 2);
     harness.get_by_label("Panel 1");

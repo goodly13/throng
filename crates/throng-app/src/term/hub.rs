@@ -493,21 +493,11 @@ impl TerminalHub {
                     }
                 }
                 TermEvent::Title(title) => {
-                    // Whose title? The daemon's last word on busy is up to a second and a half
-                    // old, so when it says idle the shell's children are looked at right now; a
-                    // shell not listed yet cannot be judged.
-                    let busy = if view.busy {
-                        Some(true)
-                    } else {
-                        view.shell_pid.map(|pid| {
-                            throng_platform::process::ProcessTable::snapshot().running_command(pid).is_some()
-                        })
-                    };
-                    view.set_title(Some(title), busy);
+                    view.set_title(Some(title));
                     out.push(HubEvent::TitleChanged(view.panel));
                 }
                 TermEvent::ResetTitle => {
-                    view.set_title(None, Some(false));
+                    view.set_title(None);
                     out.push(HubEvent::TitleChanged(view.panel));
                 }
                 TermEvent::Clipboard(text) => out.push(HubEvent::Clipboard(text)),

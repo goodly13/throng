@@ -224,7 +224,7 @@ fn spawn_streams_output_and_reports_the_exit_code() {
     // A daemon with no PTY host to hand (as here) gives every terminal its own rights, and only an
     // elevated Windows daemon's are marked.
     assert_eq!(first.elevated, cfg!(windows) && throng_platform::process::is_elevated());
-    // The shell's pid comes with the snapshot, so a title can be judged from the first byte (FR-055).
+    // The shell's pid comes with the snapshot, so what it runs can be read before the first listing.
     assert!(first.pid.is_some(), "the snapshot names the shell");
     let mut view = View::new(&first);
     view.pump(&client, |v| v.exited.is_some());
