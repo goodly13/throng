@@ -498,8 +498,12 @@ missing. [Open work](#open-work) collects every gap in one list.
   - Every shell learns its terminal and project: the daemon sets `THRONG_TERMINAL` and
     `THRONG_PROJECT` (beside `TERM_PROGRAM=throng`), which is how a command run in a terminal names
     it. An endpoint that cannot be opened is said once in a notice; the window runs without it.
-
-  *Not yet:* the `throng` command line that speaks it.
+  - **The command line.** `throng open PATH[:LINE[:COL]]`, `throng focus`, `throng notify WORDS…`
+    and `throng status` send the commands above; a relative path is resolved against the caller's
+    folder, and `status` prints its answer as JSON. `throng [FOLDER]` while a throng is open hands
+    the folder to it (with no folder, brings its window forward) rather than refusing to start.
+    Exit status 0 when done; 1, with the reason on standard error, when refused or when no throng
+    answers; 2 for wrong arguments.
 
 ### Appearance and configuration
 

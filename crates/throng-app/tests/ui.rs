@@ -2340,3 +2340,92 @@ fn remote_commands_open_files_focus_terminals_and_raise_notices() {
     assert_eq!(harness.state().focused_panel(), Some(panel));
     assert_eq!(harness.state().project_activity(projects[0].id).attention, 0, "seen, with the keyboard");
 }
+
+/// Run the `throng` command line against this test's instance while the app keeps drawing.
+fn cli(
+    harness: &mut Harness<'static, ThrongApp>,
+    env: &Env,
+    cwd: &Path,
+    args: &[&str],
+    vars: &[(&str, &str)],
+) -> std::process::Output {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_throng"));
+    command
+        .args(args)
+        .current_dir(cwd)
+        .env("THRONG_HOME", env.dirs.home.as_ref().unwrap())
+        .env_remove("THRONG_TERMINAL")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    for (name, value) in vars {
+        command.env(name, value);
+    }
+    let mut child = command.spawn().unwrap();
+    let deadline = Instant::now() + WAIT;
+    while child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "the command line hung");
+        harness.step();
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn the_command_line_reaches_the_running_throng() {
+    let env = Env::new();
+    let root = env.folder("cli");
+    let file = root.join("src").join("a.rs");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
+    env.seed(&root, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, terminal(TerminalPanelConfig::default()));
+    });
+    // A running throng holds the instance's UI lock; this test stands in for it.
+    let lock =
+        std::fs::File::options().create(true).truncate(false).write(true).open(env.dirs.ui_lock()).unwrap();
+    lock.try_lock().unwrap();
+    let mut harness = env.app(None);
+    let panel = first_panel(harness.state());
+    wait(&mut harness, "the shell", |app| app.terminal_status(panel) == Some(Status::Running));
+    let stderr = |out: &std::process::Output| String::from_utf8_lossy(&out.stderr).into_owned();
+
+    // A relative path is resolved against the caller's folder, and opens at its line.
+    let out = cli(&mut harness, &env, &root, &["open", "src/a.rs:3"], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    steps(&mut harness, 3);
+    harness.get_by_label("line 3");
+
+    // Status prints every project and terminal as JSON.
+    let out = cli(&mut harness, &env, &root, &["status"], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let projects: Vec<throng_app::remote::ProjectStatus> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(projects[0].name, "Seeded");
+    assert_eq!(projects[0].terminals[0].terminal, panel.into());
+
+    // notify names the terminal it was typed in, through the shell's THRONG_TERMINAL.
+    let id = panel.to_string();
+    let out = cli(&mut harness, &env, &root, &["notify", "tests", "passed"], &[("THRONG_TERMINAL", &id)]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    steps(&mut harness, 2);
+    let notice = harness.state().notices().iter().find(|n| n.message.contains("tests passed")).cloned();
+    assert!(notice.is_some_and(|n| n.message.contains("Panel 1")), "{:?}", harness.state().notices());
+
+    // A second launch with a folder hands it to the running throng instead of refusing to start.
+    let other = env.folder("other");
+    let out = cli(&mut harness, &env, &root, &[other.to_str().unwrap()], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    steps(&mut harness, 3);
+    let opened = harness.state().projects().iter().find(|p| p.root == other).map(|p| p.id);
+    assert!(opened.is_some(), "the folder became a project");
+    assert_eq!(harness.state().active_project_id(), opened);
+
+    // Wrong arguments and refusals exit non-zero, in words.
+    let out = cli(&mut harness, &env, &root, &["open"], &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let outside = env.folder("elsewhere").join("x.txt");
+    std::fs::write(&outside, "x").unwrap();
+    let out = cli(&mut harness, &env, &root, &["open", outside.to_str().unwrap()], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("No project"), "{}", stderr(&out));
+}
