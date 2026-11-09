@@ -66,7 +66,8 @@ comments, so keep them under the width by hand.
 - **Terminal keys belong to the terminal** (Principle IV). A new command bound to a reserved chord
   (Ctrl+C, D, Z, A, E, W, U, K, R, L, Q) where terminals are live is a defect; the keymap refuses it.
 - **Every glyph drawn as text must be in the bundled fonts.** `crates/throng-app/tests/glyphs.rs`
-  fails the build otherwise; write non-ASCII glyphs in source as `\u{…}` escapes.
+  fails the build otherwise. It scans string and char literals, so write a non-ASCII glyph literally
+  inside the literal that draws it: a `\u{…}` escape is invisible to the scan.
 - **Clipboard chords arrive as events, not keys.** egui-winit turns Ctrl/Cmd+X, C and V into
   `Event::Cut`, `Copy` and `Paste`; matching them as keys never fires.
 - **egui_kittest steps at 1/60 s.** A UI test waits on an observable condition, never a sleep.
