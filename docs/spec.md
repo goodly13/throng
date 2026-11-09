@@ -636,7 +636,7 @@ missing. [Open work](#open-work) collects every gap in one list.
   - `app.commandPalette` (Ctrl+Shift+P) opens the command palette: every command live where the
     keyboard is, with its chord, and every project and tab by name. Typing filters; Enter runs.
 
-  *Not yet:* the app does not run these yet, and the palette is not built.
+  *Not yet:* the command palette.
 
 ### Packaging
 

@@ -2429,3 +2429,51 @@ fn the_command_line_reaches_the_running_throng() {
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(stderr(&out).contains("No project"), "{}", stderr(&out));
 }
+
+#[test]
+fn chords_move_between_panels_projects_and_the_projects_list() {
+    let env = Env::new();
+    let (a_root, b_root) = (env.folder("alpha"), env.folder("beta"));
+    let (left_file, right_file) = (a_root.join("a.txt"), a_root.join("b.txt"));
+    std::fs::write(&left_file, "left\n").unwrap();
+    std::fs::write(&right_file, "right\n").unwrap();
+    let mut right = None;
+    let a = env.seed_project(&a_root, "Alpha", 0, true, |project, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, PanelKind::Editor(EditorPanelConfig { path: Some(left_file.clone()) }));
+        let editor = PanelKind::Editor(EditorPanelConfig { path: Some(right_file.clone()) });
+        right = Some(layout.add_panel(project, Some(first), Placement::Right, editor));
+    });
+    let b = env.seed_project(&b_root, "Beta", 1, false, |_, layout| {
+        let first = layout.tabs[0].root.panels()[0];
+        layout.set_kind(first, PanelKind::Untyped);
+    });
+    let right = right.unwrap();
+    let mut harness = env.app(None);
+    steps(&mut harness, 3);
+    let left = first_panel(harness.state());
+    // The keyboard moves between panels by direction (the panel added last is the active one).
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::ArrowLeft);
+    wait(&mut harness, "the left editor to take the keyboard", |app| app.focused_panel() == Some(left));
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::ArrowRight);
+    wait(&mut harness, "the right editor to take the keyboard", |app| app.focused_panel() == Some(right));
+    // Between projects, in the sidebar's order, wrapping around.
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::PageDown);
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().active_project_id(), Some(b));
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::PageDown);
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().active_project_id(), Some(a), "wrapped around");
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::PageUp);
+    steps(&mut harness, 3);
+    assert_eq!(harness.state().active_project_id(), Some(b));
+    // The projects list can be put away and brought back.
+    assert!(harness.state().projects_shown());
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::P);
+    steps(&mut harness, 2);
+    assert!(!harness.state().projects_shown());
+    assert!(harness.query_by_role_and_label(egui::accesskit::Role::Button, "Alpha").is_none());
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::P);
+    steps(&mut harness, 2);
+    harness.get_by_role_and_label(egui::accesskit::Role::Button, "Alpha");
+}

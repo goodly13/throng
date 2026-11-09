@@ -65,6 +65,15 @@ pub struct Services {
     pub installer: std::sync::Arc<dyn crate::self_update::Installer>,
 }
 
+/// A direction to move the keyboard in (FR-057).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 /// What a project's terminals are up to (FR-055): how many need attention, how many are busy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Activity {
@@ -161,6 +170,10 @@ pub struct ThrongApp {
     attention_shown: usize,
     /// Terminals drawn this frame by the drawing that sizes them.
     drawn: HashSet<PanelId>,
+    /// Where each panel was last drawn, for moving the keyboard by direction (FR-057).
+    panel_rects: HashMap<PanelId, egui::Rect>,
+    /// Whether the projects list is shown (View → Projects, `view.toggleProjects`).
+    show_projects: bool,
     icon_pack_problems: Vec<(String, String)>,
     icons_applied: Option<String>,
     /// Find in Files panels' results and scans (not persisted).
@@ -391,6 +404,8 @@ impl ThrongApp {
             windows_focused: true,
             attention_shown: 0,
             drawn: HashSet::new(),
+            panel_rects: HashMap::new(),
+            show_projects: true,
             icon_pack_problems: Vec::new(),
             icons_applied: None,
             searches: HashMap::new(),
@@ -563,6 +578,11 @@ impl ThrongApp {
     #[must_use]
     pub fn focused_panel(&self) -> Option<PanelId> {
         self.focus.panel
+    }
+
+    #[must_use]
+    pub fn projects_shown(&self) -> bool {
+        self.show_projects
     }
 
     /// How many of a project's terminals need attention, and how many are busy (FR-055).
@@ -1031,6 +1051,82 @@ impl ThrongApp {
             .collect()
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Navigation (FR-057)
+
+    /// Switch to the next (or the previous) project in the sidebar's order, wrapping around.
+    fn switch_project_by(&mut self, ctx: &Context, forward: bool) {
+        let projects: Vec<ProjectId> = self.book.projects().iter().map(|p| p.id).collect();
+        let Some(current) = self.book.active_id().and_then(|id| projects.iter().position(|p| *p == id))
+        else {
+            return;
+        };
+        let count = projects.len();
+        let target = if forward { (current + 1) % count } else { (current + count - 1) % count };
+        if target != current {
+            self.switch_project(projects[target]);
+            self.apply_theme(ctx);
+        }
+    }
+
+    /// The panels of the tab that holds `panel`, in the active project.
+    fn tab_panels(&self, project: ProjectId, panel: PanelId) -> Option<Vec<PanelId>> {
+        let layout = &self.workspaces.get(&project)?.layout;
+        Some(layout.tab(layout.tab_of(panel)?)?.root.panels())
+    }
+
+    /// Move the keyboard to the nearest panel in `direction` in the open tab, judged by the panels'
+    /// centres as last drawn.
+    fn focus_direction(&mut self, ctx: &Context, direction: Direction) {
+        let Some(project) = self.book.active_id() else { return };
+        let Some(current) = self.active_panel() else { return };
+        let Some(panels) = self.tab_panels(project, current) else { return };
+        let Some(from) = self.panel_rects.get(&current).map(egui::Rect::center) else { return };
+        let ahead = |to: egui::Pos2| {
+            let (dx, dy) = (to.x - from.x, to.y - from.y);
+            let fits = match direction {
+                Direction::Left => dx < 0.0 && dx.abs() >= dy.abs(),
+                Direction::Right => dx > 0.0 && dx.abs() >= dy.abs(),
+                Direction::Up => dy < 0.0 && dy.abs() > dx.abs(),
+                Direction::Down => dy > 0.0 && dy.abs() > dx.abs(),
+            };
+            fits.then_some(dx * dx + dy * dy)
+        };
+        let nearest = panels
+            .iter()
+            .filter(|p| **p != current)
+            .filter_map(|p| ahead(self.panel_rects.get(p)?.center()).map(|distance| (distance, *p)))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, p)| p);
+        if let Some(panel) = nearest {
+            self.reveal_panel(ctx, project, panel);
+        }
+    }
+
+    /// Save every document with unsaved edits and a path, wherever its editor is.
+    fn save_all(&mut self) {
+        let editors: Vec<(ProjectId, PanelId)> = self
+            .workspaces
+            .iter()
+            .flat_map(|(pid, ws)| {
+                ws.layout
+                    .panels
+                    .values()
+                    .filter(|p| matches!(p.kind, PanelKind::Editor(EditorPanelConfig { path: Some(_) })))
+                    .map(move |p| (*pid, p.id))
+            })
+            .collect();
+        for (pid, panel) in editors {
+            let dirty = self
+                .editor_key(pid, panel)
+                .and_then(|key| self.docs.get(&key))
+                .is_some_and(crate::editor::Document::is_dirty);
+            if dirty {
+                self.save_panel(pid, panel);
+            }
+        }
+    }
+
     /// Ask the system for attention (a dock bounce, a taskbar flash) while no throng window has
     /// the focus: a bell, or an end, that nobody is looking at (FR-055).
     fn request_attention(&self, ctx: &Context) {
@@ -1445,6 +1541,7 @@ impl ThrongApp {
             mirrors: &mirrors,
             subs: &[],
             drawn: &mut self.drawn,
+            rects: &mut self.panel_rects,
             sub_workspace: true,
         };
         workspace_ui::show(ui, ws, &mut panels, &mut self.renaming_tab);
@@ -2032,6 +2129,34 @@ impl ThrongApp {
         }
         if take("view.toggleExplorer") {
             self.show_explorer = !self.show_explorer;
+        }
+        if take("view.toggleProjects") {
+            self.show_projects = !self.show_projects;
+        }
+        if take("project.next") {
+            self.switch_project_by(ctx, true);
+        }
+        if take("project.previous") {
+            self.switch_project_by(ctx, false);
+        }
+        let directions = [
+            ("focus.left", Direction::Left),
+            ("focus.right", Direction::Right),
+            ("focus.up", Direction::Up),
+            ("focus.down", Direction::Down),
+        ];
+        for (id, direction) in directions {
+            if take(id) {
+                self.focus_direction(ctx, direction);
+            }
+        }
+        if take("panel.rename")
+            && let Some(panel) = self.active_panel()
+        {
+            actions.push(PanelAction::Rename(panel));
+        }
+        if take("editor.saveAll") {
+            self.save_all();
         }
         if take("view.fullscreen") {
             let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
@@ -3498,6 +3623,12 @@ impl ThrongApp {
                         }
                         ui.close();
                     }
+                    let save_all = egui::Button::new("Save All")
+                        .shortcut_text(crate::keymap::label(ui.ctx(), "editor.saveAll"));
+                    if ui.add(save_all).clicked() {
+                        self.save_all();
+                        ui.close();
+                    }
                 });
                 if !mac {
                     ui.separator();
@@ -3553,8 +3684,35 @@ impl ThrongApp {
                     self.reveal_panel(ui.ctx(), project, panel);
                     ui.close();
                 }
+                ui.separator();
+                let several = self.book.projects().len() > 1;
+                for (title, id, forward) in
+                    [("Next Project", "project.next", true), ("Previous Project", "project.previous", false)]
+                {
+                    let item = egui::Button::new(title).shortcut_text(crate::keymap::label(ui.ctx(), id));
+                    if ui.add_enabled(several, item).clicked() {
+                        self.switch_project_by(ui.ctx(), forward);
+                        ui.close();
+                    }
+                }
+                ui.menu_button("Focus Panel", |ui| {
+                    let moves = [
+                        ("Left", "focus.left", Direction::Left),
+                        ("Right", "focus.right", Direction::Right),
+                        ("Up", "focus.up", Direction::Up),
+                        ("Down", "focus.down", Direction::Down),
+                    ];
+                    for (title, id, direction) in moves {
+                        let item = egui::Button::new(title).shortcut_text(crate::keymap::label(ui.ctx(), id));
+                        if ui.add_enabled(has_project, item).clicked() {
+                            self.focus_direction(ui.ctx(), direction);
+                            ui.close();
+                        }
+                    }
+                });
             });
             ui.menu_button("View", |ui| {
+                ui.checkbox(&mut self.show_projects, "Projects");
                 ui.checkbox(&mut self.show_explorer, "File Explorer");
                 ui.separator();
                 let mut tree_right = self.settings.file_tree_on_right();
@@ -4070,6 +4228,7 @@ impl ThrongApp {
             mirrors: &no_mirrors,
             subs: &subs,
             drawn: &mut self.drawn,
+            rects: &mut self.panel_rects,
             sub_workspace: false,
         };
         workspace_ui::show(ui, ws, &mut ctx, &mut self.renaming_tab);
@@ -4194,6 +4353,8 @@ impl eframe::App for ThrongApp {
         } else {
             self.shortcuts(&ctx)
         };
+        // The chords above read where panels were drawn last frame; this frame's drawing refills it.
+        self.panel_rects.clear();
 
         let shape = self.look.shape;
         egui::Panel::top("menu")
@@ -4209,15 +4370,17 @@ impl eframe::App for ThrongApp {
         let side_frame = self.look.side_frame();
         // The projects list is made first, so it is outermost on its side; the file tree sits
         // inside it when they share a side.
-        side_panel(self.settings.projects_on_right(), "sidebar")
-            .frame(self.look.projects_frame())
-            .show_separator_line(shape.column_lines)
-            .resizable(true)
-            .default_size(190.0)
-            .size_range(120.0..=360.0)
-            .show(ui, |ui| {
-                self.sidebar(ui, &ctx);
-            });
+        if self.show_projects {
+            side_panel(self.settings.projects_on_right(), "sidebar")
+                .frame(self.look.projects_frame())
+                .show_separator_line(shape.column_lines)
+                .resizable(true)
+                .default_size(190.0)
+                .size_range(120.0..=360.0)
+                .show(ui, |ui| {
+                    self.sidebar(ui, &ctx);
+                });
+        }
         if self.show_explorer && self.book.active_id().is_some() {
             side_panel(self.settings.file_tree_on_right(), "explorer")
                 .frame(side_frame)

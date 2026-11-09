@@ -106,6 +106,10 @@ The default chords (Cmd instead of Ctrl on macOS):
 |---|---|
 | Ctrl+Shift+T | Quick Open: pick a project file by part of its path |
 | Ctrl+Shift+A | Go to What Needs You: the first terminal whose bell rang or which exited |
+| Ctrl+Alt+PageDown / Ctrl+Alt+PageUp | Next / previous project |
+| Ctrl+Alt+Arrows | Focus the panel to the left, right, above or below |
+| Ctrl+Alt+R / Ctrl+Alt+S | Rename the panel / save all |
+| Ctrl+Alt+P | Show or hide the projects list |
 | Ctrl+F, F3 / Shift+F3, Esc | Find in the active editor or terminal; next / previous; close |
 | Ctrl+H (Cmd+Alt+F on macOS) | Replace in the active editor |
 | Ctrl+G | Go to line |

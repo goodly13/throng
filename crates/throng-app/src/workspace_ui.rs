@@ -230,6 +230,8 @@ pub struct PanelCtx<'a> {
     pub subs: &'a [SubTarget],
     /// Terminals already drawn this frame by the drawing that sizes them.
     pub drawn: &'a mut HashSet<PanelId>,
+    /// Where each panel is drawn this frame, for moving the keyboard by direction (FR-057).
+    pub rects: &'a mut HashMap<PanelId, egui::Rect>,
     /// The workspace being drawn is a sub-workspace, not a project's.
     pub sub_workspace: bool,
 }
@@ -372,6 +374,7 @@ impl TabViewer for Viewer<'_, '_> {
 
     fn ui(&mut self, ui: &mut Ui, tab: &mut PanelId) {
         let panel = *tab;
+        self.ctx.rects.insert(panel, ui.max_rect());
         let Some(record) = self.panels.get(&panel) else { return };
         match record.kind.clone() {
             PanelKind::Untyped => {
