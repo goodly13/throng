@@ -624,6 +624,20 @@ missing. [Open work](#open-work) collects every gap in one list.
     throng's. A pack that sets the `file` icon draws it for every kind of file.
 - **FR-044** Every glyph drawn as text MUST exist in the bundled fonts, and a test enforces it.
 
+- **FR-057** Navigation. Commands, each with a default chord (FR-042) and a place in a menu
+  (Principle VI), move the keyboard without the mouse:
+  - `project.next` and `project.previous` (Ctrl+Alt+PageDown, Ctrl+Alt+PageUp) switch to the next
+    or the previous project in the sidebar's order, wrapping around.
+  - `focus.left`, `focus.right`, `focus.up` and `focus.down` (Ctrl+Alt+Arrows) move the keyboard to
+    the nearest panel in that direction in the open tab, judged by the panels' centres as drawn.
+  - `panel.rename` (Ctrl+Alt+R) renames the panel with the keyboard; `editor.saveAll` (Ctrl+Alt+S)
+    saves every document with unsaved edits and a path; `view.toggleProjects` (Ctrl+Alt+P) hides or
+    shows the projects list, as the View menu's *Projects* does.
+  - `app.commandPalette` (Ctrl+Shift+P) opens the command palette: every command live where the
+    keyboard is, with its chord, and every project and tab by name. Typing filters; Enter runs.
+
+  *Not yet:* the app does not run these yet, and the palette is not built.
+
 ### Packaging
 
 - **FR-045** Packages. `packaging/package.sh` builds packages for the platform it runs on:
